@@ -2,8 +2,10 @@ package tui
 
 import (
 	"fmt"
+	"log"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ploglabs/molly-terminal/internal/db"
 	"github.com/ploglabs/molly-terminal/internal/model"
 	"github.com/ploglabs/molly-terminal/internal/webhook"
 	"github.com/ploglabs/molly-terminal/internal/wsclient"
@@ -16,25 +18,33 @@ type wsStatusMsg struct {
 	Err    error
 }
 
+type dbWriteResultMsg struct {
+	Err error
+}
+
 type Model struct {
 	width      int
 	height     int
 	client     *wsclient.Client
 	sender     *webhook.Sender
+	store      *db.Store
 	msgs       []model.Message
 	status     wsclient.Status
 	channel    string
 	lastSendOk bool
 	sendErr    string
+	log        *log.Logger
 }
 
-func New(client *wsclient.Client, sender *webhook.Sender, channel string) Model {
+func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, channel string) Model {
 	return Model{
 		client:     client,
 		sender:     sender,
+		store:      store,
 		channel:    channel,
 		status:     wsclient.StatusDisconnected,
 		lastSendOk: true,
+		log:        log.Default(),
 	}
 }
 
@@ -52,7 +62,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.msgs) > 200 {
 			m.msgs = m.msgs[len(m.msgs)-200:]
 		}
-		return m, m.listenMessages()
+		return m, tea.Batch(m.listenMessages(), m.persistMessage(model.Message(msg)))
 	case wsStatusMsg:
 		m.status = msg.Status
 		if msg.Status == wsclient.StatusConnected && m.channel != "" {
@@ -66,6 +76,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.lastSendOk = true
 			m.sendErr = ""
+		}
+		return m, nil
+	case dbWriteResultMsg:
+		if msg.Err != nil {
+			m.log.Printf("db: %v", msg.Err)
 		}
 		return m, nil
 	case tea.KeyMsg:
@@ -133,4 +148,14 @@ func (m Model) SendMessage(content string) tea.Cmd {
 		return nil
 	}
 	return m.sender.SendAsync(content)
+}
+
+func (m Model) persistMessage(msg model.Message) tea.Cmd {
+	if m.store == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		err := m.store.InsertMessage(msg)
+		return dbWriteResultMsg{Err: err}
+	}
 }

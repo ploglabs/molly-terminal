@@ -11,6 +11,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/ploglabs/molly-terminal/internal/auth/discord"
 	"github.com/ploglabs/molly-terminal/internal/config"
+	"github.com/ploglabs/molly-terminal/internal/db"
 	"github.com/ploglabs/molly-terminal/internal/tui"
 	"github.com/ploglabs/molly-terminal/internal/webhook"
 	"github.com/ploglabs/molly-terminal/internal/wsclient"
@@ -36,6 +37,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	store, err := db.New("")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "database error: %v\n", err)
+		os.Exit(1)
+	}
+	defer store.Close()
+
 	client := wsclient.New(cfg.Server.WebsocketURL, cfg.General.Username, cfg.General.Channel)
 	sender := webhook.New(cfg.Server.WebhookURL, cfg.General.Username)
 
@@ -44,7 +52,7 @@ func main() {
 
 	go client.ConnectWithRetry(ctx)
 
-	model := tui.New(client, sender, cfg.General.Channel)
+	model := tui.New(client, sender, store, cfg.General.Channel)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	sigCh := make(chan os.Signal, 1)
