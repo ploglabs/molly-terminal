@@ -12,6 +12,7 @@ import (
 	"github.com/ploglabs/molly-terminal/internal/auth/discord"
 	"github.com/ploglabs/molly-terminal/internal/config"
 	"github.com/ploglabs/molly-terminal/internal/tui"
+	"github.com/ploglabs/molly-terminal/internal/webhook"
 	"github.com/ploglabs/molly-terminal/internal/wsclient"
 )
 
@@ -36,13 +37,14 @@ func main() {
 	}
 
 	client := wsclient.New(cfg.Server.WebsocketURL, cfg.General.Username, cfg.General.Channel)
+	sender := webhook.New(cfg.Server.WebhookURL, cfg.General.Username)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	go client.ConnectWithRetry(ctx)
 
-	model := tui.New(client, cfg.General.Channel)
+	model := tui.New(client, sender, cfg.General.Channel)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	sigCh := make(chan os.Signal, 1)

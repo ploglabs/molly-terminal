@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ploglabs/molly-terminal/internal/model"
+	"github.com/ploglabs/molly-terminal/internal/webhook"
 	"github.com/ploglabs/molly-terminal/internal/wsclient"
 )
 
@@ -16,19 +17,24 @@ type wsStatusMsg struct {
 }
 
 type Model struct {
-	width   int
-	height  int
-	client  *wsclient.Client
-	msgs    []model.Message
-	status  wsclient.Status
-	channel string
+	width      int
+	height     int
+	client     *wsclient.Client
+	sender     *webhook.Sender
+	msgs       []model.Message
+	status     wsclient.Status
+	channel    string
+	lastSendOk bool
+	sendErr    string
 }
 
-func New(client *wsclient.Client, channel string) Model {
+func New(client *wsclient.Client, sender *webhook.Sender, channel string) Model {
 	return Model{
-		client:  client,
-		channel: channel,
-		status:  wsclient.StatusDisconnected,
+		client:     client,
+		sender:     sender,
+		channel:    channel,
+		status:     wsclient.StatusDisconnected,
+		lastSendOk: true,
 	}
 }
 
@@ -53,6 +59,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.listenStatus(), m.subscribeCmd(m.channel))
 		}
 		return m, m.listenStatus()
+	case webhook.SendResultMsg:
+		if msg.Err != nil {
+			m.lastSendOk = false
+			m.sendErr = msg.Err.Error()
+		} else {
+			m.lastSendOk = true
+			m.sendErr = ""
+		}
+		return m, nil
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" || msg.String() == "q" {
 			if m.client != nil {
@@ -66,7 +81,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) View() string {
 	statusLine := fmt.Sprintf("[%s] channel: %s", m.status, m.channel)
-	if len(m.msgs) > 0 {
+	if !m.lastSendOk && m.sendErr != "" {
+		statusLine += fmt.Sprintf("\n⚠ send error: %s", m.sendErr)
+	}
+	if m.lastSendOk && len(m.msgs) > 0 {
 		last := m.msgs[len(m.msgs)-1]
 		statusLine += fmt.Sprintf("\n%s: %s", last.Username, last.Content)
 	}
@@ -108,4 +126,11 @@ func (m Model) subscribeCmd(channel string) tea.Cmd {
 		}
 		return nil
 	}
+}
+
+func (m Model) SendMessage(content string) tea.Cmd {
+	if m.sender == nil {
+		return nil
+	}
+	return m.sender.SendAsync(content)
 }
