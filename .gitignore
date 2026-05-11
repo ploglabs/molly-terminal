@@ -3,3 +3,4 @@ molly
 *.dll
 *.so
 *.dylib
+.env
