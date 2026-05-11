@@ -1,3 +1,16 @@
+# Molly Terminal Configuration
+#
+# Place this file at ~/.config/molly/config.toml
+# or pass a custom path via --config / -c flag.
+#
+# Any field can be overridden with environment variables:
+#   MOLLY_USERNAME
+#   MOLLY_CHANNEL
+#   MOLLY_WEBSOCKET_URL
+#   MOLLY_WEBHOOK_URL
+#   MOLLY_THEME
+#   MOLLY_HISTORY_LIMIT
+
 [general]
 # Your display name in chat
 username = "anonymous"
