@@ -30,6 +30,7 @@ type GeneralConfig struct {
 type ServerConfig struct {
 	WebsocketURL string `toml:"websocket_url"`
 	WebhookURL   string `toml:"webhook_url"`
+	RelayURL     string `toml:"relay_url"`
 }
 
 type AuthConfig struct {
@@ -63,6 +64,7 @@ func Default() *Config {
 		Server: ServerConfig{
 			WebsocketURL: "",
 			WebhookURL:   "",
+			RelayURL:     "",
 		},
 		Auth: AuthConfig{
 			Enabled:  false,
@@ -179,6 +181,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("MOLLY_WEBHOOK_URL"); v != "" {
 		cfg.Server.WebhookURL = v
+	}
+	if v := os.Getenv("MOLLY_RELAY_URL"); v != "" {
+		cfg.Server.RelayURL = v
 	}
 	if v := os.Getenv("MOLLY_AUTH_ENABLED"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
