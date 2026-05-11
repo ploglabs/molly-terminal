@@ -1,0 +1,17 @@
+[general]
+# Your display name in chat
+username = "anonymous"
+# Default channel to join on startup
+channel = "general"
+
+[server]
+# WebSocket relay server URL
+websocket_url = "wss://relay.example.com/ws"
+# Discord webhook URL for sending messages
+webhook_url = "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN"
+
+[ui]
+# Color theme (default, dracula, solarized)
+theme = "default"
+# Number of messages to fetch on startup
+history_limit = 100
