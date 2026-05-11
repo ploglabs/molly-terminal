@@ -141,6 +141,7 @@ func TestEnvOverrides(t *testing.T) {
 	os.Setenv("MOLLY_CHANNEL", "envchannel")
 	os.Setenv("MOLLY_WEBSOCKET_URL", "wss://env.com/ws")
 	os.Setenv("MOLLY_WEBHOOK_URL", "https://env.com/webhook")
+	os.Setenv("MOLLY_RELAY_URL", "https://relay.env.com")
 	os.Setenv("MOLLY_AUTH_ENABLED", "true")
 	os.Setenv("MOLLY_AUTH_PROVIDER", "discord")
 	os.Setenv("MOLLY_DISCORD_CLIENT_ID", "discord-client-id")
@@ -153,6 +154,7 @@ func TestEnvOverrides(t *testing.T) {
 		os.Unsetenv("MOLLY_CHANNEL")
 		os.Unsetenv("MOLLY_WEBSOCKET_URL")
 		os.Unsetenv("MOLLY_WEBHOOK_URL")
+		os.Unsetenv("MOLLY_RELAY_URL")
 		os.Unsetenv("MOLLY_AUTH_ENABLED")
 		os.Unsetenv("MOLLY_AUTH_PROVIDER")
 		os.Unsetenv("MOLLY_DISCORD_CLIENT_ID")
@@ -175,6 +177,9 @@ func TestEnvOverrides(t *testing.T) {
 	}
 	if cfg.Server.WebhookURL != "https://env.com/webhook" {
 		t.Errorf("expected overridden webhook_url, got '%s'", cfg.Server.WebhookURL)
+	}
+	if cfg.Server.RelayURL != "https://relay.env.com" {
+		t.Errorf("expected overridden relay_url, got '%s'", cfg.Server.RelayURL)
 	}
 	if !cfg.Auth.Enabled || cfg.Auth.Provider != "discord" {
 		t.Errorf("expected discord auth env overrides to be applied, got enabled=%v provider=%q", cfg.Auth.Enabled, cfg.Auth.Provider)
@@ -384,6 +389,7 @@ func clearConfigEnvVars() {
 	os.Unsetenv("MOLLY_CHANNEL")
 	os.Unsetenv("MOLLY_WEBSOCKET_URL")
 	os.Unsetenv("MOLLY_WEBHOOK_URL")
+	os.Unsetenv("MOLLY_RELAY_URL")
 	os.Unsetenv("MOLLY_THEME")
 	os.Unsetenv("MOLLY_HISTORY_LIMIT")
 }

@@ -32,6 +32,8 @@ discord_avatar_url = ""
 websocket_url = "wss://relay.example.com/ws"
 # Discord webhook URL for sending messages
 webhook_url = "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN"
+# Relay REST API base URL for fetching message history
+relay_url = "https://relay.example.com"
 
 [auth]
 # Enable Discord OAuth on first run
