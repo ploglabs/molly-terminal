@@ -8,20 +8,49 @@
 #   MOLLY_CHANNEL
 #   MOLLY_WEBSOCKET_URL
 #   MOLLY_WEBHOOK_URL
+#   MOLLY_AUTH_ENABLED
+#   MOLLY_AUTH_PROVIDER
+#   MOLLY_DISCORD_CLIENT_ID
+#   MOLLY_DISCORD_CLIENT_SECRET
+#   MOLLY_DISCORD_REDIRECT_URL
 #   MOLLY_THEME
 #   MOLLY_HISTORY_LIMIT
 
 [general]
-# Your display name in chat
-username = "anonymous"
+# Leave empty when using Discord auth; Molly will populate this from Discord.
+username = ""
 # Default channel to join on startup
 channel = "general"
+# Persisted from Discord auth after first login
+discord_id = ""
+discord_username = ""
+discord_global_name = ""
+discord_avatar_url = ""
 
 [server]
 # WebSocket relay server URL
 websocket_url = "wss://relay.example.com/ws"
 # Discord webhook URL for sending messages
 webhook_url = "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN"
+
+[auth]
+# Enable Discord OAuth on first run
+enabled = true
+provider = "discord"
+
+[auth.discord]
+# Create an app at https://discord.com/developers/applications
+client_id = "YOUR_DISCORD_CLIENT_ID"
+# Leave empty here. Set MOLLY_DISCORD_CLIENT_SECRET in your shell instead.
+client_secret = ""
+# Add this exact URL to OAuth2 > Redirects in the Discord Developer Portal
+redirect_url = "http://127.0.0.1:53682/callback"
+# Persisted after first login
+access_token = ""
+refresh_token = ""
+token_type = ""
+scope = ""
+expiry = ""
 
 [ui]
 # Color theme (default, dracula, solarized)

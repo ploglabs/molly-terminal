@@ -9,11 +9,14 @@ import (
 func TestDefaultConfig(t *testing.T) {
 	cfg := Default()
 
-	if cfg.General.Username != "anonymous" {
-		t.Errorf("expected username 'anonymous', got '%s'", cfg.General.Username)
+	if cfg.General.Username != "" {
+		t.Errorf("expected empty username, got '%s'", cfg.General.Username)
 	}
 	if cfg.General.Channel != "general" {
 		t.Errorf("expected channel 'general', got '%s'", cfg.General.Channel)
+	}
+	if cfg.Auth.Discord.RedirectURL != "http://127.0.0.1:53682/callback" {
+		t.Errorf("expected default redirect url, got '%s'", cfg.Auth.Discord.RedirectURL)
 	}
 	if cfg.UI.HistoryLimit != 100 {
 		t.Errorf("expected history_limit 100, got %d", cfg.UI.HistoryLimit)
@@ -25,6 +28,7 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestValidateMissingFields(t *testing.T) {
 	cfg := Default()
+	cfg.General.Username = "tester"
 
 	err := cfg.Validate()
 	if err == nil {
@@ -53,6 +57,20 @@ func TestValidateMissingUsername(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error for missing username")
+	}
+}
+
+func TestValidateAllowsMissingUsernameWithDiscordAuth(t *testing.T) {
+	cfg := Default()
+	cfg.Server.WebsocketURL = "wss://example.com"
+	cfg.Server.WebhookURL = "https://discord.com/api/webhooks/test"
+	cfg.Auth.Enabled = true
+	cfg.Auth.Provider = "discord"
+	cfg.Auth.Discord.ClientID = "client-id"
+	cfg.Auth.Discord.ClientSecret = "client-secret"
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected discord auth config to be valid without username, got: %v", err)
 	}
 }
 
@@ -123,6 +141,11 @@ func TestEnvOverrides(t *testing.T) {
 	os.Setenv("MOLLY_CHANNEL", "envchannel")
 	os.Setenv("MOLLY_WEBSOCKET_URL", "wss://env.com/ws")
 	os.Setenv("MOLLY_WEBHOOK_URL", "https://env.com/webhook")
+	os.Setenv("MOLLY_AUTH_ENABLED", "true")
+	os.Setenv("MOLLY_AUTH_PROVIDER", "discord")
+	os.Setenv("MOLLY_DISCORD_CLIENT_ID", "discord-client-id")
+	os.Setenv("MOLLY_DISCORD_CLIENT_SECRET", "discord-client-secret")
+	os.Setenv("MOLLY_DISCORD_REDIRECT_URL", "http://127.0.0.1:9000/callback")
 	os.Setenv("MOLLY_THEME", "solarized")
 	os.Setenv("MOLLY_HISTORY_LIMIT", "200")
 	defer func() {
@@ -130,6 +153,11 @@ func TestEnvOverrides(t *testing.T) {
 		os.Unsetenv("MOLLY_CHANNEL")
 		os.Unsetenv("MOLLY_WEBSOCKET_URL")
 		os.Unsetenv("MOLLY_WEBHOOK_URL")
+		os.Unsetenv("MOLLY_AUTH_ENABLED")
+		os.Unsetenv("MOLLY_AUTH_PROVIDER")
+		os.Unsetenv("MOLLY_DISCORD_CLIENT_ID")
+		os.Unsetenv("MOLLY_DISCORD_CLIENT_SECRET")
+		os.Unsetenv("MOLLY_DISCORD_REDIRECT_URL")
 		os.Unsetenv("MOLLY_THEME")
 		os.Unsetenv("MOLLY_HISTORY_LIMIT")
 	}()
@@ -147,6 +175,15 @@ func TestEnvOverrides(t *testing.T) {
 	}
 	if cfg.Server.WebhookURL != "https://env.com/webhook" {
 		t.Errorf("expected overridden webhook_url, got '%s'", cfg.Server.WebhookURL)
+	}
+	if !cfg.Auth.Enabled || cfg.Auth.Provider != "discord" {
+		t.Errorf("expected discord auth env overrides to be applied, got enabled=%v provider=%q", cfg.Auth.Enabled, cfg.Auth.Provider)
+	}
+	if cfg.Auth.Discord.ClientID != "discord-client-id" {
+		t.Errorf("expected discord client id override, got '%s'", cfg.Auth.Discord.ClientID)
+	}
+	if cfg.Auth.Discord.RedirectURL != "http://127.0.0.1:9000/callback" {
+		t.Errorf("expected discord redirect override, got '%s'", cfg.Auth.Discord.RedirectURL)
 	}
 	if cfg.UI.Theme != "solarized" {
 		t.Errorf("expected theme 'solarized', got '%s'", cfg.UI.Theme)
