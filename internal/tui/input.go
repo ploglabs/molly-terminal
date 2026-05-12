@@ -15,6 +15,9 @@ type InputModel struct {
 	pos        int
 	focused    bool
 	showCursor bool
+
+	completions []string
+	compIdx     int
 }
 
 func newInput(prompt string) InputModel {
@@ -54,6 +57,7 @@ func (m *InputModel) Blur() {
 func (m *InputModel) Insert(ch rune) {
 	m.text = append(m.text[:m.pos], append([]rune{ch}, m.text[m.pos:]...)...)
 	m.pos++
+	m.clearCompletions()
 }
 
 func (m *InputModel) Backspace() {
@@ -61,12 +65,14 @@ func (m *InputModel) Backspace() {
 		m.text = append(m.text[:m.pos-1], m.text[m.pos:]...)
 		m.pos--
 	}
+	m.clearCompletions()
 }
 
 func (m *InputModel) DeleteForward() {
 	if m.pos < len(m.text) {
 		m.text = append(m.text[:m.pos], m.text[m.pos+1:]...)
 	}
+	m.clearCompletions()
 }
 
 func (m *InputModel) MoveLeft() {
@@ -96,6 +102,55 @@ func (m *InputModel) InsertNewline() {
 func (m *InputModel) Clear() {
 	m.text = nil
 	m.pos = 0
+	m.clearCompletions()
+}
+
+func (m *InputModel) clearCompletions() {
+	m.completions = nil
+	m.compIdx = 0
+}
+
+// SetCompletions sets the completion candidates.
+func (m *InputModel) SetCompletions(completions []string) {
+	m.completions = completions
+	m.compIdx = 0
+}
+
+// ApplyNextCompletion replaces the current word at the cursor with the next completion.
+func (m *InputModel) ApplyNextCompletion() {
+	if len(m.completions) == 0 {
+		return
+	}
+	completion := m.completions[m.compIdx]
+	m.compIdx = (m.compIdx + 1) % len(m.completions)
+
+	// Find start of current word
+	wordStart := m.pos
+	for wordStart > 0 && m.text[wordStart-1] != ' ' {
+		wordStart--
+	}
+
+	// Replace word with completion + space
+	newText := make([]rune, 0, wordStart+len([]rune(completion))+1)
+	newText = append(newText, m.text[:wordStart]...)
+	newText = append(newText, []rune(completion)...)
+	newText = append(newText, ' ')
+	newText = append(newText, m.text[m.pos:]...)
+	m.text = newText
+	m.pos = wordStart + len([]rune(completion)) + 1
+}
+
+// WordAtCursor returns (word, prefix) where prefix is "@" or "#" if present.
+func (m *InputModel) WordAtCursor() (word, prefix string) {
+	wordStart := m.pos
+	for wordStart > 0 && m.text[wordStart-1] != ' ' {
+		wordStart--
+	}
+	w := string(m.text[wordStart:m.pos])
+	if len(w) > 0 && (w[0] == '@' || w[0] == '#') {
+		return w[1:], string(w[0:1])
+	}
+	return w, ""
 }
 
 func (m InputModel) CursorBlinkCmd() tea.Cmd {
@@ -117,7 +172,6 @@ func (m InputModel) Update(msg tea.Msg) (InputModel, tea.Cmd) {
 
 func (m InputModel) View() string {
 	prefix := promptStyle().Render(m.prompt)
-	text := string(m.text)
 
 	style := inputStyle()
 	if m.focused {
@@ -128,12 +182,11 @@ func (m InputModel) View() string {
 	if maxText < 1 {
 		maxText = 1
 	}
-
 	if m.pos > maxText {
 		maxText = m.pos
 	}
 
-	displayText := text
+	displayText := string(m.text)
 	cursorPos := m.pos
 	if len(displayText) > maxText {
 		start := m.pos - maxText + 1
@@ -146,16 +199,15 @@ func (m InputModel) View() string {
 
 	if m.focused && m.showCursor {
 		c := cursorChar
-		if cursorPos > len(displayText) {
-			displayText += c
-		} else if cursorPos == len(displayText) {
+		if cursorPos >= len([]rune(displayText)) {
 			displayText += c
 		} else {
-			displayText = displayText[:cursorPos] + c + displayText[cursorPos:]
+			r := []rune(displayText)
+			displayText = string(r[:cursorPos]) + c + string(r[cursorPos:])
 		}
 	}
-	if len(displayText) > maxText {
-		displayText = displayText[:maxText]
+	if len([]rune(displayText)) > maxText {
+		displayText = string([]rune(displayText)[:maxText])
 	}
 
 	content := prefix + displayText
@@ -194,7 +246,8 @@ func handleInputKey(msg tea.KeyMsg, m *InputModel) (bool, string) {
 		m.Insert(' ')
 	}
 
-	if msg.String() == "ctrl+w" {
+	switch msg.String() {
+	case "ctrl+w":
 		wordStart := m.pos
 		for wordStart > 0 && m.text[wordStart-1] == ' ' {
 			wordStart--
@@ -204,19 +257,14 @@ func handleInputKey(msg tea.KeyMsg, m *InputModel) (bool, string) {
 		}
 		m.text = append(m.text[:wordStart], m.text[m.pos:]...)
 		m.pos = wordStart
-	}
-	if msg.String() == "ctrl+a" {
+	case "ctrl+a":
 		m.MoveHome()
-	}
-	if msg.String() == "ctrl+e" {
+	case "ctrl+e":
 		m.MoveEnd()
-	}
-	if msg.String() == "ctrl+k" {
+	case "ctrl+k":
 		m.text = m.text[:m.pos]
-	}
-	if msg.String() == "ctrl+u" {
-		m.text = m.text[m.pos:]
-		m.pos = 0
+	case "ctrl+u":
+		m.Clear()
 	}
 
 	return false, ""

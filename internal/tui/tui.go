@@ -5,6 +5,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -22,6 +23,10 @@ type wsStatusMsg struct {
 	Err    error
 }
 
+type typingEventMsg model.TypingEvent
+
+type typingTickMsg struct{}
+
 type dbWriteResultMsg struct {
 	Err error
 }
@@ -35,24 +40,27 @@ type Model struct {
 	store   *db.Store
 	fetcher *history.Fetcher
 
-	msgs       []model.Message
-	status     wsclient.Status
-	channel    string
-	channels   []string
-	users      []string
-	lastSendOk bool
-	sendErr    string
+	msgs            []model.Message
+	status          wsclient.Status
+	channel         string
+	channels        []string
+	users           []string
+	lastSendOk      bool
+	sendErr         string
 
-	loadingHistory  bool
-	historyLoaded   bool
+	loadingHistory   bool
+	historyLoaded    bool
 	allHistoryLoaded bool
 
 	scrollOffset int
+	unreadCount  int
 	input        InputModel
 	log          *log.Logger
 
 	channelsVisible bool
 	usersVisible    bool
+
+	typingUsers map[string]time.Time
 }
 
 func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, channel string) Model {
@@ -71,6 +79,7 @@ func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetch
 		input:           newInput("> "),
 		channelsVisible: true,
 		usersVisible:    true,
+		typingUsers:     make(map[string]time.Time),
 		log:             log.Default(),
 	}
 }
@@ -79,6 +88,7 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.listenMessages(),
 		m.listenStatus(),
+		m.listenTyping(),
 		history.InitialFetch(m.fetcher, m.channel, 100),
 		m.input.CursorBlinkCmd(),
 	)
@@ -100,7 +110,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.msgs = m.msgs[len(m.msgs)-1000:]
 		}
 		m.users = msgsToUsers(m.msgs)
-		m.scrollOffset = 0
+		if m.scrollOffset > 0 {
+			m.unreadCount++
+		} else {
+			m.scrollOffset = 0
+		}
 		return m, tea.Batch(m.listenMessages(), m.persistMessage(model.Message(msg)))
 
 	case wsStatusMsg:
@@ -109,6 +123,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.listenStatus(), m.subscribeCmd(m.channel))
 		}
 		return m, m.listenStatus()
+
+	case typingEventMsg:
+		if msg.Channel == m.channel || msg.Channel == "" {
+			if m.typingUsers == nil {
+				m.typingUsers = make(map[string]time.Time)
+			}
+			m.typingUsers[msg.Username] = time.Now()
+		}
+		return m, tea.Batch(m.listenTyping(), typingTickCmd())
+
+	case typingTickMsg:
+		now := time.Now()
+		for user, lastSeen := range m.typingUsers {
+			if now.Sub(lastSeen) > 3*time.Second {
+				delete(m.typingUsers, user)
+			}
+		}
+		if len(m.typingUsers) > 0 {
+			return m, typingTickCmd()
+		}
+		return m, nil
 
 	case history.FetchResultMsg:
 		m.loadingHistory = false
@@ -167,17 +202,75 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			_ = m.client.Close()
 		}
 		return m, tea.Quit
-	case "esc", "ctrl+q":
+
+	case "ctrl+q":
+		if m.client != nil {
+			_ = m.client.Close()
+		}
 		return m, tea.Quit
+
+	case "esc":
+		// Cancel / unfocus: clear input or clear completions
+		if m.input.Value() != "" {
+			m.input.Clear()
+		}
+		return m, nil
+
 	case "ctrl+b":
 		m.channelsVisible = !m.channelsVisible
 		return m, nil
-	case "ctrl+u":
+
+	case "ctrl+y":
 		m.usersVisible = !m.usersVisible
 		return m, nil
+
 	case "ctrl+l":
-		m.clearScreen()
+		m.scrollOffset = 0
+		m.unreadCount = 0
 		return m, nil
+
+	case "ctrl+p":
+		m.prevChannel()
+		return m, m.subscribeCmd(m.channel)
+
+	case "ctrl+n":
+		m.nextChannel()
+		return m, m.subscribeCmd(m.channel)
+
+	case "tab":
+		word, prefix := m.input.WordAtCursor()
+		var candidates []string
+		switch prefix {
+		case "@":
+			for _, u := range m.users {
+				if strings.HasPrefix(strings.ToLower(u), strings.ToLower(word)) {
+					candidates = append(candidates, "@"+u)
+				}
+			}
+		case "#":
+			for _, ch := range m.channels {
+				if strings.HasPrefix(strings.ToLower(ch), strings.ToLower(word)) {
+					candidates = append(candidates, "#"+ch)
+				}
+			}
+		default:
+			// Complete from users if word is non-empty
+			if word != "" {
+				for _, u := range m.users {
+					if strings.HasPrefix(strings.ToLower(u), strings.ToLower(word)) {
+						candidates = append(candidates, "@"+u)
+					}
+				}
+			}
+		}
+		if len(candidates) > 0 {
+			if len(m.input.completions) == 0 {
+				m.input.SetCompletions(candidates)
+			}
+			m.input.ApplyNextCompletion()
+		}
+		return m, nil
+
 	case "pgup":
 		m.scrollOffset += m.chatHeight() / 2
 		if m.scrollOffset > len(m.msgs)-1 {
@@ -186,46 +279,58 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.scrollOffset < 0 {
 			m.scrollOffset = 0
 		}
-		if m.scrollOffset >= len(m.msgs)-m.chatHeight() && !m.loadingHistory && !m.allHistoryLoaded && m.historyLoaded && len(m.msgs) > 0 {
-			oldest := m.msgs[0].Timestamp
-			m.loadingHistory = true
-			return m, history.LoadOlder(m.fetcher, m.channel, oldest)
-		}
-		return m, nil
+		return m, m.loadOlderIfNeeded()
+
 	case "pgdown":
 		m.scrollOffset -= m.chatHeight() / 2
 		if m.scrollOffset < 0 {
 			m.scrollOffset = 0
+			m.unreadCount = 0
 		}
 		return m, nil
+
 	case "up":
 		m.scrollOffset++
 		if m.scrollOffset > len(m.msgs)-1 {
 			m.scrollOffset = len(m.msgs) - 1
 		}
-		if m.scrollOffset >= len(m.msgs)-m.chatHeight() && !m.loadingHistory && !m.allHistoryLoaded && m.historyLoaded && len(m.msgs) > 0 {
-			oldest := m.msgs[0].Timestamp
-			m.loadingHistory = true
-			return m, history.LoadOlder(m.fetcher, m.channel, oldest)
-		}
-		return m, nil
+		return m, m.loadOlderIfNeeded()
+
 	case "down":
 		m.scrollOffset--
 		if m.scrollOffset < 0 {
 			m.scrollOffset = 0
+			m.unreadCount = 0
 		}
 		return m, nil
 	}
 
 	submitted, value := handleInputKey(msg, &m.input)
-	if submitted && value != "" {
+	if submitted {
 		val := strings.TrimSpace(value)
+		if val == "/quit" {
+			if m.client != nil {
+				_ = m.client.Close()
+			}
+			return m, tea.Quit
+		}
 		if val != "" {
 			return m, m.SendMessage(val)
 		}
 	}
 
 	return m, nil
+}
+
+func (m *Model) loadOlderIfNeeded() tea.Cmd {
+	if !m.loadingHistory && !m.allHistoryLoaded && m.historyLoaded && len(m.msgs) > 0 {
+		if m.scrollOffset >= len(m.msgs)-m.chatHeight() {
+			oldest := m.msgs[0].Timestamp
+			m.loadingHistory = true
+			return history.LoadOlder(m.fetcher, m.channel, oldest)
+		}
+	}
+	return nil
 }
 
 func (m Model) View() string {
@@ -237,17 +342,12 @@ func (m Model) View() string {
 			Render(fmt.Sprintf("terminal too small (%dx%d)\nmin 80x24 recommended", m.width, m.height))
 	}
 
-	var finalCmd []string
-
 	statusBar := m.renderStatusBar()
-	finalCmd = append(finalCmd, statusBar)
-
 	contentHeight := m.height - 1
 
 	chWidth := m.channelSidebarWidth()
 	usersWidth := m.userSidebarWidth()
 	chatW := m.width
-
 	if m.channelsVisible {
 		chatW -= chWidth
 	}
@@ -264,49 +364,52 @@ func (m Model) View() string {
 	usersPanel := m.renderUsers(usersWidth, contentHeight)
 	chatPanel := m.renderChatArea(chatW, contentHeight)
 
+	var content string
 	if !m.channelsVisible && !m.usersVisible {
-		finalCmd = append(finalCmd, chatPanel)
+		content = chatPanel
 	} else if !m.channelsVisible {
-		finalCmd = append(finalCmd, lipgloss.JoinHorizontal(lipgloss.Top, chatPanel, usersPanel))
+		content = lipgloss.JoinHorizontal(lipgloss.Top, chatPanel, usersPanel)
 	} else if !m.usersVisible {
-		finalCmd = append(finalCmd, lipgloss.JoinHorizontal(lipgloss.Top, channelsPanel, chatPanel))
+		content = lipgloss.JoinHorizontal(lipgloss.Top, channelsPanel, chatPanel)
 	} else {
-		finalCmd = append(finalCmd, lipgloss.JoinHorizontal(lipgloss.Top, channelsPanel, chatPanel, usersPanel))
+		content = lipgloss.JoinHorizontal(lipgloss.Top, channelsPanel, chatPanel, usersPanel)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, finalCmd...)
+	return lipgloss.JoinVertical(lipgloss.Left, statusBar, content)
 }
 
 func (m Model) renderStatusBar() string {
-	left := fmt.Sprintf(" [%s] %s", m.status, m.channel)
-	center := fmt.Sprintf("%d users", len(m.users))
-	right := "ctrl+b:ch ctrl+u:users pgup/pgdn ↑/↓:scroll ctrl+q:quit"
-
-	leftW := lipgloss.Width(left)
-	rightW := lipgloss.Width(right)
-	centerW := lipgloss.Width(center)
-
-	leftPad := 0
-	rightPad := 0
-
-	if m.width-leftW-rightW-centerW > 4 {
-		leftPad = (m.width - leftW - centerW - rightW - 4) / 2
-		rightPad = m.width - leftW - leftPad - centerW - rightW - 4
+	connStr := string(m.status)
+	switch m.status {
+	case wsclient.StatusConnected:
+		connStr = "connected"
+	case wsclient.StatusDisconnected:
+		connStr = "disconnected"
+	case wsclient.StatusReconnecting:
+		connStr = "reconnecting"
 	}
 
-	style := statusBarStyle()
-	if !m.lastSendOk {
+	left := fmt.Sprintf(" [%s] | #%s | %d users", connStr, m.channel, len(m.users))
+	right := " ctrl+b:ch ctrl+y:users ctrl+l:clear ctrl+c:quit "
+
+	if !m.lastSendOk && m.sendErr != "" {
 		left = statusErrorStyle().Render(fmt.Sprintf(" ⚠ %s", m.sendErr))
-		leftW = lipgloss.Width(left)
 	}
 
-	return style.Width(m.width).Render(
-		left +
-			strings.Repeat(" ", leftPad) +
-			center +
-			strings.Repeat(" ", rightPad) +
-			right,
-	)
+	unreadPart := ""
+	if m.unreadCount > 0 {
+		unreadPart = fmt.Sprintf(" | ↑ %d new", m.unreadCount)
+	}
+
+	leftW := lipgloss.Width(left) + lipgloss.Width(unreadPart)
+	rightW := lipgloss.Width(right)
+	gap := m.width - leftW - rightW
+	if gap < 0 {
+		gap = 0
+	}
+
+	bar := left + unreadPart + strings.Repeat(" ", gap) + right
+	return statusBarStyle().Width(m.width).Render(bar)
 }
 
 func (m Model) renderChannels(width, height int) string {
@@ -356,13 +459,21 @@ func (m Model) renderUsers(width, height int) string {
 }
 
 func (m Model) renderChatArea(width, height int) string {
-	title := panelTitleStyle().Render(fmt.Sprintf(" #%s ", m.channel))
+	titleText := fmt.Sprintf(" #%s ", m.channel)
 	if m.loadingHistory {
-		title = panelTitleStyle().Render(fmt.Sprintf(" #%s %s", m.channel, loadingStyle().Render("(loading...)")))
+		titleText = fmt.Sprintf(" #%s %s", m.channel, loadingStyle().Render("(loading...)"))
+	}
+	title := panelTitleStyle().Render(titleText)
+
+	// typing indicator is 1 line if active, 0 otherwise
+	typingLine := m.renderTypingIndicator()
+	typingHeight := 0
+	if typingLine != "" {
+		typingHeight = 1
 	}
 
-	inputHeight := 1
-	chatH := height - inputHeight - 2
+	inputHeight := 3 // border + 1 line
+	chatH := height - inputHeight - typingHeight - 2
 	if chatH < 1 {
 		chatH = 1
 	}
@@ -384,12 +495,40 @@ func (m Model) renderChatArea(width, height int) string {
 
 	inputBox := m.input.View()
 
-	return title + "\n" + chatBox + "\n" + inputBox
+	parts := []string{title, chatBox}
+	if typingLine != "" {
+		parts = append(parts, typingLine)
+	}
+	parts = append(parts, inputBox)
+
+	return strings.Join(parts, "\n")
 }
 
-func (m *Model) clearScreen() {
-	m.msgs = nil
-	m.scrollOffset = 0
+func (m Model) renderTypingIndicator() string {
+	if len(m.typingUsers) == 0 {
+		return ""
+	}
+	var names []string
+	for u := range m.typingUsers {
+		names = append(names, u)
+	}
+	sort.Strings(names)
+	var text string
+	switch len(names) {
+	case 1:
+		text = fmt.Sprintf(" %s is typing...", names[0])
+	case 2:
+		text = fmt.Sprintf(" %s and %s are typing...", names[0], names[1])
+	default:
+		text = fmt.Sprintf(" %s and others are typing...", names[0])
+	}
+	return typingStyle().Render(text)
+}
+
+func typingTickCmd() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+		return typingTickMsg{}
+	})
 }
 
 func (m Model) listenMessages() tea.Cmd {
@@ -417,6 +556,20 @@ func (m Model) listenStatus() tea.Cmd {
 			return nil
 		}
 		return wsStatusMsg{Status: sc.Status, Err: sc.Err}
+	}
+}
+
+func (m Model) listenTyping() tea.Cmd {
+	if m.client == nil {
+		return nil
+	}
+	ch := m.client.TypingEvents()
+	return func() tea.Msg {
+		te, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return typingEventMsg(te)
 	}
 }
 
@@ -462,7 +615,7 @@ func (m Model) chatWidth() int {
 
 func (m Model) chatHeight() int {
 	h := m.height - 1
-	inputH := 1
+	inputH := 3
 	chatH := h - inputH - 1
 	if chatH < 1 {
 		chatH = 1
@@ -486,6 +639,34 @@ func (m Model) userSidebarWidth() int {
 	w := m.width * 12 / 100
 	w = clampInt(w, 10, 18)
 	return w
+}
+
+func (m *Model) nextChannel() {
+	if len(m.channels) == 0 {
+		return
+	}
+	idx := 0
+	for i, ch := range m.channels {
+		if ch == m.channel {
+			idx = i
+			break
+		}
+	}
+	m.channel = m.channels[(idx+1)%len(m.channels)]
+}
+
+func (m *Model) prevChannel() {
+	if len(m.channels) == 0 {
+		return
+	}
+	idx := 0
+	for i, ch := range m.channels {
+		if ch == m.channel {
+			idx = i
+			break
+		}
+	}
+	m.channel = m.channels[(idx-1+len(m.channels))%len(m.channels)]
 }
 
 func insertSorted(msgs []model.Message, m model.Message) []model.Message {

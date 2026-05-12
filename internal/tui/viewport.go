@@ -10,13 +10,12 @@ import (
 )
 
 type ViewportModel struct {
-	width           int
-	height          int
-	offset          int
-	messages        []model.Message
-	showTimestamps  bool
-	loading         bool
-	allLoaded       bool
+	width     int
+	height    int
+	offset    int
+	messages  []model.Message
+	loading   bool
+	allLoaded bool
 }
 
 func newViewport() ViewportModel {
@@ -70,63 +69,74 @@ func (v *ViewportModel) View() string {
 		return ""
 	}
 
-	style := messageStyle().Width(v.width)
-
 	visible := v.visibleLines()
 	total := len(v.messages)
 
 	if total == 0 {
-		empty := lipgloss.NewStyle().
+		return lipgloss.NewStyle().
 			Width(v.width).
 			Height(v.height).
 			Align(lipgloss.Center, lipgloss.Center).
 			Foreground(themeDim).
 			Render("no messages yet...")
-		return empty
 	}
 
-	start := total - visible - v.offset
-	if start < 0 {
-		start = 0
-	}
+	// Window: show `visible` messages ending at total - offset
 	end := total - v.offset
 	if end > total {
 		end = total
 	}
+	if end < 0 {
+		end = 0
+	}
 
-	if v.offset > 0 {
-		scrollUpCount := total - end
-		if scrollUpCount > 0 {
-			more := fmt.Sprintf("  %d older messages  ", scrollUpCount)
-			return loadingStyle().Width(v.width).Align(lipgloss.Center, lipgloss.Center).Height(v.height).Render(more)
+	// Reserve a line for the "newer messages" indicator when scrolled up
+	effectiveVisible := visible
+	showNewerBanner := v.offset > 0
+	if showNewerBanner {
+		effectiveVisible = visible - 1
+		if effectiveVisible < 1 {
+			effectiveVisible = 1
 		}
 	}
 
+	start := end - effectiveVisible
+	if start < 0 {
+		start = 0
+	}
+
+	msgStyle := messageStyle()
+	tsStyle := lipgloss.NewStyle().Foreground(themeDim)
 	var lines []string
+
+	// Loading older history indicator at top
+	if v.loading {
+		lines = append(lines, loadingStyle().Render("  loading older messages..."))
+	}
+
 	for _, m := range v.messages[start:end] {
+		ts := tsStyle.Render(formatTime(m.Timestamp))
 		username := coloredUsername(m.Username)
-		line := fmt.Sprintf("<%s> %s", username, m.Content)
+		content := renderMarkdown(m.Content, v.width-12)
 
-		if v.showTimestamps {
-			ts := m.Timestamp.Format("15:04")
-			line = fmt.Sprintf("%s %s", lipgloss.NewStyle().Foreground(themeDim).Render(ts), line)
-		}
-
-		line = style.Render(line)
-		line = wrapText(line, v.width)
+		raw := fmt.Sprintf("%s <%s> %s", ts, username, content)
+		wrapped := wrapText(raw, v.width)
+		line := msgStyle.Width(v.width).Render(wrapped)
 		lines = append(lines, line)
+	}
+
+	// Newer messages indicator at bottom when scrolled up
+	if showNewerBanner {
+		indicator := fmt.Sprintf("  ↑ %d new — PgDn/↓ to scroll down", v.offset)
+		lines = append(lines, newMsgBannerStyle().Width(v.width).Render(indicator))
 	}
 
 	content := strings.Join(lines, "\n")
 
-	if v.loading && v.offset >= len(v.messages)-visible {
-		content += "\n" + loadingStyle().Render("  loading older messages...")
-	}
-
-	height := v.height
+	// Pad top with empty lines so content is bottom-anchored
 	currentLines := len(strings.Split(content, "\n"))
-	if currentLines < height {
-		content = strings.Repeat("\n", height-currentLines) + content
+	if currentLines < visible {
+		content = strings.Repeat("\n", visible-currentLines) + content
 	}
 
 	return content

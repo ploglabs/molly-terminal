@@ -39,6 +39,7 @@ type Client struct {
 	conn      *websocket.Conn
 	connMu    sync.Mutex
 	msgCh     chan model.Message
+	typingCh  chan model.TypingEvent
 	statusCh  chan StatusChange
 	done      chan struct{}
 	closeOnce sync.Once
@@ -51,6 +52,7 @@ func New(url, username, channel string) *Client {
 		username: username,
 		channel:  channel,
 		msgCh:    make(chan model.Message, 256),
+		typingCh: make(chan model.TypingEvent, 32),
 		statusCh: make(chan StatusChange, 16),
 		done:     make(chan struct{}),
 		log:      log.Default(),
@@ -112,6 +114,10 @@ func (c *Client) ConnectWithRetry(ctx context.Context) {
 
 func (c *Client) Messages() <-chan model.Message {
 	return c.msgCh
+}
+
+func (c *Client) TypingEvents() <-chan model.TypingEvent {
+	return c.typingCh
 }
 
 func (c *Client) StatusChanges() <-chan StatusChange {
@@ -225,6 +231,20 @@ func (c *Client) readLoop() {
 			}
 			c.log.Printf("ws: read error: %v", err)
 			return
+		}
+
+		var raw2 model.RawEvent
+		if err := json.Unmarshal(raw, &raw2); err == nil && raw2.Type == "typing" {
+			var te model.TypingEvent
+			if err := json.Unmarshal(raw, &te); err == nil {
+				select {
+				case c.typingCh <- te:
+				case <-c.done:
+					return
+				default:
+				}
+				continue
+			}
 		}
 
 		var msg model.Message
