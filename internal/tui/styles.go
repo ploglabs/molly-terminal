@@ -139,3 +139,17 @@ func systemMessageStyle() lipgloss.Style {
 func coloredUsername(name string) string {
 	return lipgloss.NewStyle().Foreground(usernameColor(name)).Render(name)
 }
+
+func typingStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(themeDim).
+		Italic(true).
+		PaddingLeft(1)
+}
+
+func newMsgBannerStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(themeAccent).
+		Background(themeSelectedBg).
+		Bold(true)
+}
