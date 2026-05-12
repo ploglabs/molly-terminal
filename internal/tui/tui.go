@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ploglabs/molly-terminal/internal/commands"
 	"github.com/ploglabs/molly-terminal/internal/db"
 	"github.com/ploglabs/molly-terminal/internal/history"
 	"github.com/ploglabs/molly-terminal/internal/model"
@@ -30,10 +31,11 @@ type Model struct {
 	width  int
 	height int
 
-	client  *wsclient.Client
-	sender  *webhook.Sender
-	store   *db.Store
-	fetcher *history.Fetcher
+	client   *wsclient.Client
+	sender   *webhook.Sender
+	store    *db.Store
+	fetcher  *history.Fetcher
+	registry *commands.Registry
 
 	msgs       []model.Message
 	status     wsclient.Status
@@ -55,12 +57,13 @@ type Model struct {
 	usersVisible    bool
 }
 
-func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, channel string) Model {
+func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, registry *commands.Registry, channel string) Model {
 	return Model{
 		client:          client,
 		sender:          sender,
 		store:           store,
 		fetcher:         fetcher,
+		registry:        registry,
 		channel:         channel,
 		channels:        []string{channel},
 		status:          wsclient.StatusDisconnected,
@@ -147,6 +150,59 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case commands.CommandOutputMsg:
+		for _, sysMsg := range msg.Messages {
+			m.msgs = append(m.msgs, sysMsg)
+		}
+		if len(m.msgs) > 1000 {
+			m.msgs = m.msgs[len(m.msgs)-1000:]
+		}
+		m.scrollOffset = 0
+		return m, nil
+
+	case commands.SwitchChannelMsg:
+		oldChannel := m.channel
+		m.channel = msg.Channel
+
+		found := false
+		for _, ch := range m.channels {
+			if ch == msg.Channel {
+				found = true
+				break
+			}
+		}
+		if !found {
+			m.channels = append(m.channels, msg.Channel)
+			if m.store != nil {
+				_ = m.store.InsertChannel(msg.Channel)
+			}
+		}
+
+		m.msgs = nil
+		m.scrollOffset = 0
+		m.allHistoryLoaded = false
+		m.historyLoaded = false
+
+		sysMsg := commands.SystemMsg(fmt.Sprintf("switched to #%s", msg.Channel))
+		m.msgs = append(m.msgs, sysMsg)
+
+		cmds = append(cmds, m.subscribeSwitchCmd(oldChannel, msg.Channel))
+		cmds = append(cmds, history.InitialFetch(m.fetcher, msg.Channel, 100))
+
+		return m, tea.Batch(cmds...)
+
+	case commands.ClearMessagesMsg:
+		m.clearScreen()
+		return m, nil
+
+	case commands.TriggerHistoryLoadMsg:
+		if m.loadingHistory || m.allHistoryLoaded || len(m.msgs) == 0 {
+			return m, nil
+		}
+		m.loadingHistory = true
+		oldest := m.msgs[0].Timestamp
+		return m, history.LoadOlder(m.fetcher, m.channel, oldest)
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -220,9 +276,26 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	submitted, value := handleInputKey(msg, &m.input)
 	if submitted && value != "" {
 		val := strings.TrimSpace(value)
-		if val != "" {
-			return m, m.SendMessage(val)
+		if val == "" {
+			return m, nil
 		}
+
+		if strings.HasPrefix(val, "/") {
+			cmdName, args := commands.ParseInput(val)
+			if cmdName == "" {
+				return m, nil
+			}
+			cmd, err := m.registry.Execute(cmdName, args)
+			if err != nil {
+				sysMsg := commands.SystemMsg(fmt.Sprintf("error: /%s — %v", cmdName, err))
+				m.msgs = append(m.msgs, sysMsg)
+				m.scrollOffset = 0
+				return m, nil
+			}
+			return m, cmd
+		}
+
+		return m, m.SendMessage(val)
 	}
 
 	return m, nil
@@ -424,6 +497,18 @@ func (m Model) subscribeCmd(channel string) tea.Cmd {
 	return func() tea.Msg {
 		if m.client != nil {
 			_ = m.client.Subscribe(channel)
+		}
+		return nil
+	}
+}
+
+func (m Model) subscribeSwitchCmd(oldChannel, newChannel string) tea.Cmd {
+	return func() tea.Msg {
+		if m.client != nil {
+			if oldChannel != "" {
+				_ = m.client.Unsubscribe(oldChannel)
+			}
+			_ = m.client.Subscribe(newChannel)
 		}
 		return nil
 	}

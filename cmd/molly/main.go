@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/joho/godotenv"
 	"github.com/ploglabs/molly-terminal/internal/auth/discord"
+	"github.com/ploglabs/molly-terminal/internal/commands"
 	"github.com/ploglabs/molly-terminal/internal/config"
 	"github.com/ploglabs/molly-terminal/internal/db"
 	"github.com/ploglabs/molly-terminal/internal/history"
@@ -54,7 +55,15 @@ func main() {
 
 	go client.ConnectWithRetry(ctx)
 
-	model := tui.New(client, sender, store, fetcher, cfg.General.Channel)
+	registry := commands.NewRegistry()
+	registry.Register(commands.NewHelpCmd(registry))
+	registry.Register(commands.NewJoinCmd(client, fetcher, store))
+	registry.Register(commands.NewHistoryCmd())
+	registry.Register(commands.NewSearchCmd(store))
+	registry.Register(commands.NewQuitCmd())
+	registry.Register(commands.NewClearCmd())
+
+	model := tui.New(client, sender, store, fetcher, registry, cfg.General.Channel)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	sigCh := make(chan os.Signal, 1)
