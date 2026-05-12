@@ -129,6 +129,13 @@ func usernameColor(name string) lipgloss.Color {
 	return usernameColors[int(h.Sum32())%len(usernameColors)]
 }
 
+func systemMessageStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(themeDim).
+		Italic(true).
+		PaddingLeft(1)
+}
+
 func coloredUsername(name string) string {
 	return lipgloss.NewStyle().Foreground(usernameColor(name)).Render(name)
 }

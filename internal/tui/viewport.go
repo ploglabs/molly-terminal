@@ -104,15 +104,23 @@ func (v *ViewportModel) View() string {
 
 	var lines []string
 	for _, m := range v.messages[start:end] {
-		username := coloredUsername(m.Username)
-		line := fmt.Sprintf("<%s> %s", username, m.Content)
+		var line string
+
+		if m.Username == "system" {
+			line = systemMessageStyle().Render(m.Content)
+		} else {
+			username := coloredUsername(m.Username)
+			line = fmt.Sprintf("<%s> %s", username, m.Content)
+		}
 
 		if v.showTimestamps {
 			ts := m.Timestamp.Format("15:04")
 			line = fmt.Sprintf("%s %s", lipgloss.NewStyle().Foreground(themeDim).Render(ts), line)
 		}
 
-		line = style.Render(line)
+		if m.Username != "system" {
+			line = style.Render(line)
+		}
 		line = wrapText(line, v.width)
 		lines = append(lines, line)
 	}
