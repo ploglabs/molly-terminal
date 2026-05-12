@@ -1,0 +1,71 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: molly
+    main: ./cmd/molly
+    binary: molly
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+
+archives:
+  - id: molly
+    builds:
+      - molly
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - config.example.toml
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  name_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+release:
+  github:
+    owner: ploglabs
+    name: molly-terminal
+
+brews:
+  - id: molly
+    repository:
+      owner: ploglabs
+      name: homebrew-tap
+    directory: Formula
+    homepage: "https://github.com/ploglabs/molly-terminal"
+    description: "Terminal-native realtime chat client"
+    test:
+      system: "#{bin}/molly --help"
+    install: |
+      bin.install "molly"

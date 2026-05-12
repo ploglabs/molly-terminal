@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -170,6 +171,16 @@ func (s *Store) Close() error {
 }
 
 func DefaultDBPath() (string, error) {
+	if runtime.GOOS == "windows" {
+		localAppData := os.Getenv("LOCALAPPDATA")
+		if localAppData == "" {
+			localAppData = os.Getenv("APPDATA")
+		}
+		if localAppData == "" {
+			return "", fmt.Errorf("cannot determine Windows data directory: LOCALAPPDATA and APPDATA not set")
+		}
+		return filepath.Join(localAppData, "molly", "molly.db"), nil
+	}
 	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
 		return filepath.Join(xdg, "molly", "molly.db"), nil
 	}
