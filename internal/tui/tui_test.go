@@ -1,9 +1,12 @@
 package tui
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/ploglabs/molly-terminal/internal/model"
 )
 
@@ -194,7 +197,7 @@ func TestMergeMessagesWithRealtimeOverlap(t *testing.T) {
 func TestMergeMessagesIncomingOlderThanExisting(t *testing.T) {
 	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	existing := []model.Message{msg("new", base.Add(10 * time.Hour))}
+	existing := []model.Message{msg("new", base.Add(10*time.Hour))}
 	incoming := []model.Message{msg("old", base)}
 
 	result := mergeMessages(existing, incoming)
@@ -206,5 +209,60 @@ func TestMergeMessagesIncomingOlderThanExisting(t *testing.T) {
 	}
 	if result[1].ID != "new" {
 		t.Errorf("expected newest message last, got %q", result[1].ID)
+	}
+}
+
+func TestViewFitsWindowWithSidebarsAndMultilineInput(t *testing.T) {
+	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	m := New(nil, nil, nil, nil, nil, "general", "me")
+	m.width = 120
+	m.height = 30
+	m.channels = []string{"general", "backend", "frontend", "ops", "random"}
+	m.terminalOnline = []string{"me", "alice", "bob", "charlie"}
+	m.presences["alice"] = model.UserPresence{Username: "alice", Status: "reviewing the release notes", Online: true}
+	m.notifications = []model.Notification{
+		{
+			Channel:   "backend",
+			Username:  "alice",
+			Content:   "@me can you look at the deploy failure before standup?",
+			Timestamp: base,
+			MsgID:     "mention-1",
+		},
+	}
+
+	for i := 0; i < 24; i++ {
+		m.msgs = append(m.msgs, model.Message{
+			ID:        fmt.Sprintf("msg-%02d", i),
+			Username:  "alice",
+			Content:   "this is a message with enough text to exercise wrapping inside the chat panel",
+			Channel:   "general",
+			Timestamp: base.Add(time.Duration(i) * time.Minute),
+		})
+	}
+	m.replyTo = &m.msgs[len(m.msgs)-1]
+	m.input.SetValue("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine")
+
+	assertViewFits(t, m.View(), m.width, m.height)
+}
+
+func TestViewFitsSmallWindow(t *testing.T) {
+	m := New(nil, nil, nil, nil, nil, "general", "me")
+	m.width = 40
+	m.height = 12
+	m.input.SetValue("one\ntwo\nthree\nfour\nfive\nsix\nseven")
+
+	assertViewFits(t, m.View(), m.width, m.height)
+}
+
+func assertViewFits(t *testing.T, view string, width, height int) {
+	t.Helper()
+
+	if got := lipgloss.Height(view); got != height {
+		t.Fatalf("expected view height %d, got %d\n%s", height, got, view)
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if got := lipgloss.Width(line); got > width {
+			t.Fatalf("line %d exceeds width %d: got %d\n%s", i+1, width, got, line)
+		}
 	}
 }

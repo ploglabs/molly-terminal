@@ -30,6 +30,10 @@ type typingEventMsg model.TypingEvent
 
 type typingTickMsg struct{}
 
+type presenceMsg model.UserPresence
+
+type terminalUsersMsg []string
+
 type dbWriteResultMsg struct {
 	Err error
 }
@@ -73,9 +77,19 @@ type Model struct {
 
 	channelsVisible bool
 	usersVisible    bool
+	notifVisible    bool
 
 	typingUsers map[string]time.Time
 	sentHashes  map[string]time.Time
+	presences   map[string]model.UserPresence
+	myStatus    string
+
+	terminalOnline []string
+
+	replyTo       *model.Message
+	notifications []model.Notification
+	notifIdx      int
+	jumpToID      string
 }
 
 func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, registry *commands.Registry, channel, username string) Model {
@@ -105,8 +119,10 @@ func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetch
 		input:            newInput("> "),
 		channelsVisible:  true,
 		usersVisible:     true,
+		notifVisible:     true,
 		typingUsers:      make(map[string]time.Time),
 		sentHashes:       make(map[string]time.Time),
+		presences:        make(map[string]model.UserPresence),
 		log:              log.Default(),
 	}
 }
@@ -116,6 +132,8 @@ func (m Model) Init() tea.Cmd {
 		m.listenMessages(),
 		m.listenStatus(),
 		m.listenTyping(),
+		m.listenPresence(),
+		m.listenTerminalUsers(),
 		history.FetchChannels(m.fetcher),
 		m.loadLocalHistory(m.channel, 100),
 		history.InitialFetch(m.fetcher, m.channel, 100),
@@ -130,18 +148,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.input.SetWidth(m.chatWidth() - 4)
+		m.input.SetWidth(m.chatWidth())
 		return m, nil
 
 	case wsMsg:
 		m.addChannel(msg.Channel)
+
+		// Check for @mention
+		if msg.Username != m.username && strings.Contains(
+			strings.ToLower(msg.Content), "@"+strings.ToLower(m.username)) {
+			m.notifications = append(m.notifications, model.Notification{
+				Channel:   msg.Channel,
+				Username:  msg.Username,
+				Content:   msg.Content,
+				Timestamp: msg.Timestamp,
+				MsgID:     msg.ID,
+			})
+		}
+
 		if msg.Channel != m.channel {
 			return m, tea.Batch(m.listenMessages(), m.persistMessage(model.Message(msg)))
 		}
 		key := contentHash(msg.Username, msg.Channel, msg.Content)
 		if _, exists := m.sentHashes[key]; exists {
 			delete(m.sentHashes, key)
-			return m, nil
+			return m, m.listenMessages()
 		}
 		m.msgs = insertSorted(m.msgs, model.Message(msg))
 		if len(m.msgs) > 1000 {
@@ -189,17 +220,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case terminalUsersMsg:
+		m.terminalOnline = []string(msg)
+		return m, m.listenTerminalUsers()
+
 	case history.ChannelsResultMsg:
 		if msg.Err != nil {
 			m.log.Printf("channels: %v", msg.Err)
+			m.channelsOK = true // allow /join even if channels couldn't load
 			return m, nil
 		}
+		m.channelsOK = true
 		if len(msg.Channels) == 0 {
 			return m, nil
 		}
 		m.channels = mergeChannels([]string{m.channel}, msg.Channels)
 		m.available = channelsToSet(m.channels)
-		m.channelsOK = true
 		for _, ch := range m.channels {
 			if m.store != nil {
 				_ = m.store.InsertChannel(ch)
@@ -225,6 +261,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.msgs = mergeMessages(m.msgs, msg.Messages)
 		m.historyLoaded = true
+		if m.jumpToID != "" && m.jumpToMessage(m.jumpToID) {
+			m.jumpToID = ""
+		}
 		for _, msg := range msg.Messages {
 			cmds = append(cmds, m.persistMessage(msg))
 		}
@@ -246,10 +285,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.msgs = mergeMessages(m.msgs, msg.Messages)
 			m.users = msgsToUsers(m.msgs)
 			m.historyLoaded = true
+			if m.jumpToID != "" && m.jumpToMessage(m.jumpToID) {
+				m.jumpToID = ""
+			}
 		}
 		return m, nil
 
 	case webhook.SendResultMsg:
+		if msg.Err != nil {
+			m.lastSendOk = false
+			m.sendErr = msg.Err.Error()
+		} else {
+			m.lastSendOk = true
+			m.sendErr = ""
+		}
+		return m, nil
+
+	case webhook.SendFileResultMsg:
 		if msg.Err != nil {
 			m.lastSendOk = false
 			m.sendErr = msg.Err.Error()
@@ -285,6 +337,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scrollOffset = 0
 		m.allHistoryLoaded = false
 		m.historyLoaded = false
+		m.replyTo = nil
 
 		sysMsg := commands.SystemMsg(fmt.Sprintf("switched to #%s", msg.Channel))
 		m.msgs = append(m.msgs, sysMsg)
@@ -351,6 +404,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		oldest := m.msgs[0].Timestamp
 		return m, history.LoadOlder(m.fetcher, m.channel, oldest)
 
+	case presenceMsg:
+		p := model.UserPresence(msg)
+		m.presences[p.Username] = p
+		if m.store != nil {
+			store := m.store
+			go func() { _ = store.UpsertPresence(p) }()
+		}
+		return m, m.listenPresence()
+
+	case commands.SendRawMsg:
+		return m, m.SendMessage(msg.Content, m.channel, "")
+
+	case commands.SendFileMsg:
+		return m.sendFileWithEcho(msg.Path, msg.Content)
+
+	case commands.SetStatusMsg:
+		m.myStatus = msg.Status
+		now := time.Now()
+		p := model.UserPresence{
+			Username:  m.username,
+			Status:    msg.Status,
+			Online:    true,
+			LastSeen:  now,
+			UpdatedAt: now,
+		}
+		m.presences[m.username] = p
+		var sysContent string
+		if msg.Status == "" {
+			sysContent = "status cleared"
+		} else {
+			sysContent = fmt.Sprintf("status set: %s", msg.Status)
+		}
+		sysMsg := commands.SystemMsg(sysContent)
+		m.msgs = append(m.msgs, sysMsg)
+		m.scrollOffset = 0
+		client := m.client
+		store := m.store
+		return m, func() tea.Msg {
+			if client != nil {
+				_ = client.SendStatus(msg.Status)
+			}
+			if store != nil {
+				_ = store.UpsertPresence(p)
+			}
+			return nil
+		}
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -379,7 +479,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "esc":
-		// Cancel / unfocus: clear input or clear completions
+		if m.replyTo != nil {
+			m.replyTo = nil
+			return m, nil
+		}
 		if m.input.Value() != "" {
 			m.input.Clear()
 		}
@@ -400,56 +503,54 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+p":
 		m.prevChannel()
+		m.replyTo = nil
 		return m, m.subscribeCmd(m.channel)
 
 	case "ctrl+n":
 		m.nextChannel()
+		m.replyTo = nil
 		return m, m.subscribeCmd(m.channel)
 
-	case "tab":
-		word, prefix := m.input.WordAtCursor()
-		var candidates []string
-		if m.isJoinInput() {
-			needle := strings.TrimPrefix(word, "#")
-			for _, ch := range m.channels {
-				if strings.HasPrefix(strings.ToLower(ch), strings.ToLower(needle)) {
-					candidates = append(candidates, "#"+ch)
-				}
-			}
-		} else {
-			switch prefix {
-			case "/":
-				for _, c := range m.commandCandidates(word) {
-					candidates = append(candidates, "/"+c.Name())
-				}
-			case "@":
-				for _, u := range m.users {
-					if strings.HasPrefix(strings.ToLower(u), strings.ToLower(word)) {
-						candidates = append(candidates, "@"+u)
-					}
-				}
-			case "#":
-				for _, ch := range m.channels {
-					if strings.HasPrefix(strings.ToLower(ch), strings.ToLower(word)) {
-						candidates = append(candidates, "#"+ch)
-					}
-				}
-			default:
-				// Complete from users if word is non-empty
-				if word != "" {
-					for _, u := range m.users {
-						if strings.HasPrefix(strings.ToLower(u), strings.ToLower(word)) {
-							candidates = append(candidates, "@"+u)
-						}
-					}
-				}
+	case "ctrl+r":
+		// Reply to most recent non-system message
+		for i := len(m.msgs) - 1; i >= 0; i-- {
+			if m.msgs[i].Username != "system" {
+				m.replyTo = &m.msgs[i]
+				break
 			}
 		}
-		if len(candidates) > 0 {
-			if len(m.input.completions) == 0 {
-				m.input.SetCompletions(candidates)
+		return m, nil
+
+	case "ctrl+]":
+		// Focus notifications panel.
+		m.notifVisible = true
+		return m, nil
+
+	// Navigate notifications panel
+	case "up":
+		if m.notifVisible {
+			if m.notifIdx > 0 {
+				m.notifIdx--
 			}
-			m.input.ApplyNextCompletion()
+			return m, nil
+		}
+		m.scrollOffset++
+		if m.scrollOffset > len(m.msgs)-1 {
+			m.scrollOffset = len(m.msgs) - 1
+		}
+		return m, m.loadOlderIfNeeded()
+
+	case "down":
+		if m.notifVisible {
+			if m.notifIdx < len(m.notifications)-1 {
+				m.notifIdx++
+			}
+			return m, nil
+		}
+		m.scrollOffset--
+		if m.scrollOffset < 0 {
+			m.scrollOffset = 0
+			m.unreadCount = 0
 		}
 		return m, nil
 
@@ -471,31 +572,78 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "up":
-		m.scrollOffset++
-		if m.scrollOffset > len(m.msgs)-1 {
-			m.scrollOffset = len(m.msgs) - 1
+	case "enter":
+		// Jump to notification's channel
+		if m.notifVisible && len(m.notifications) > 0 && m.notifIdx < len(m.notifications) {
+			n := m.notifications[m.notifIdx]
+			if n.Channel != m.channel {
+				m.jumpToID = n.MsgID
+				return m, func() tea.Msg {
+					return commands.SwitchChannelMsg{Channel: n.Channel}
+				}
+			}
+			m.jumpToMessage(n.MsgID)
+			return m, nil
 		}
-		return m, m.loadOlderIfNeeded()
 
-	case "down":
-		m.scrollOffset--
-		if m.scrollOffset < 0 {
-			m.scrollOffset = 0
-			m.unreadCount = 0
+	case "tab":
+		word, prefix := m.input.WordAtCursor()
+		var candidates []string
+		if m.isJoinInput() {
+			needle := strings.TrimPrefix(word, "#")
+			for _, ch := range m.channels {
+				if strings.HasPrefix(strings.ToLower(ch), strings.ToLower(needle)) {
+					candidates = append(candidates, "#"+ch)
+				}
+			}
+		} else {
+			switch prefix {
+			case "/":
+				for _, c := range m.commandCandidates(word) {
+					candidates = append(candidates, "/"+c.Name())
+				}
+			case "@":
+				allUsers := m.onlineUsers()
+				for _, u := range allUsers {
+					if strings.HasPrefix(strings.ToLower(u), strings.ToLower(word)) {
+						candidates = append(candidates, "@"+u)
+					}
+				}
+			case "#":
+				for _, ch := range m.channels {
+					if strings.HasPrefix(strings.ToLower(ch), strings.ToLower(word)) {
+						candidates = append(candidates, "#"+ch)
+					}
+				}
+			default:
+				if word != "" {
+					allUsers := m.onlineUsers()
+					for _, u := range allUsers {
+						if strings.HasPrefix(strings.ToLower(u), strings.ToLower(word)) {
+							candidates = append(candidates, "@"+u)
+						}
+					}
+				}
+			}
+		}
+		if len(candidates) > 0 {
+			if len(m.input.completions) == 0 {
+				m.input.SetCompletions(candidates)
+			}
+			m.input.ApplyNextCompletion()
 		}
 		return m, nil
 	}
 
 	submitted, value := handleInputKey(msg, &m.input)
 	if submitted {
-		val := strings.TrimSpace(value)
-		if val == "" {
+		if strings.TrimSpace(value) == "" {
 			return m, nil
 		}
+		val := strings.TrimRight(value, "\n")
 
-		if strings.HasPrefix(val, "/") {
-			cmdName, args := commands.ParseInput(val)
+		if strings.HasPrefix(strings.TrimSpace(val), "/") {
+			cmdName, args := commands.ParseInput(strings.TrimSpace(val))
 			if cmdName == "" {
 				return m, nil
 			}
@@ -540,6 +688,64 @@ func (m *Model) loadOlderIfNeeded() tea.Cmd {
 	return nil
 }
 
+// onlineUsers returns only terminal-connected users.
+func (m Model) onlineUsers() []string {
+	if m.terminalOnline == nil {
+		return []string{}
+	}
+	return m.terminalOnline
+}
+
+func fitToSize(content string, width, height int) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+	clipped := lipgloss.NewStyle().
+		MaxWidth(width).
+		MaxHeight(height).
+		Render(content)
+	return lipgloss.Place(width, height, lipgloss.Left, lipgloss.Top, clipped)
+}
+
+func borderedStyleWidth(totalWidth int) int {
+	if totalWidth <= 2 {
+		return 1
+	}
+	return totalWidth - 2
+}
+
+func borderedStyleHeight(totalHeight int) int {
+	if totalHeight <= 2 {
+		return 0
+	}
+	return totalHeight - 2
+}
+
+func borderedContentHeight(totalHeight int) int {
+	if totalHeight <= 2 {
+		return 0
+	}
+	return totalHeight - 2
+}
+
+func panelContentWidth(totalWidth int) int {
+	if totalWidth <= 4 {
+		return 1
+	}
+	return totalWidth - 4
+}
+
+func renderBorderedBox(style lipgloss.Style, width, height int, content string) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+	style = style.Width(borderedStyleWidth(width)).MaxWidth(width).MaxHeight(height)
+	if h := borderedStyleHeight(height); h > 0 {
+		style = style.Height(h)
+	}
+	return fitToSize(style.Render(content), width, height)
+}
+
 func (m Model) View() string {
 	if m.width < 40 || m.height < 12 {
 		return lipgloss.NewStyle().
@@ -549,41 +755,43 @@ func (m Model) View() string {
 			Render(fmt.Sprintf("terminal too small (%dx%d)\nmin 80x24 recommended", m.width, m.height))
 	}
 
-	statusBar := m.renderStatusBar()
+	statusBar := fitToSize(m.renderStatusBar(), m.width, 1)
 	contentHeight := m.height - 1
 
 	chWidth := m.channelSidebarWidth()
-	usersWidth := m.userSidebarWidth()
+	rightWidth := m.rightSidebarWidth()
 	showChannels := m.channelsVisible && chWidth > 0
-	showUsers := m.usersVisible && usersWidth > 0
+	showRight := rightWidth > 0
+
 	chatW := m.width
 	if showChannels {
 		chatW -= chWidth
 	}
-	if showUsers {
-		chatW -= usersWidth
+	if showRight {
+		chatW -= rightWidth
 	}
 	if chatW < 20 {
 		chatW = 20
 	}
 
-	m.input.SetWidth(chatW - 6)
+	m.input.SetWidth(chatW)
 
 	channelsPanel := m.renderChannels(chWidth, contentHeight)
-	usersPanel := m.renderUsers(usersWidth, contentHeight)
 	chatPanel := m.renderChatArea(chatW, contentHeight)
+	rightPanel := m.renderRightSidebar(rightWidth, contentHeight)
 
 	var content string
-	if !showChannels && !showUsers {
+	if !showChannels && !showRight {
 		content = chatPanel
 	} else if !showChannels {
-		content = lipgloss.JoinHorizontal(lipgloss.Top, chatPanel, usersPanel)
-	} else if !showUsers {
+		content = lipgloss.JoinHorizontal(lipgloss.Top, chatPanel, rightPanel)
+	} else if !showRight {
 		content = lipgloss.JoinHorizontal(lipgloss.Top, channelsPanel, chatPanel)
 	} else {
-		content = lipgloss.JoinHorizontal(lipgloss.Top, channelsPanel, chatPanel, usersPanel)
+		content = lipgloss.JoinHorizontal(lipgloss.Top, channelsPanel, chatPanel, rightPanel)
 	}
 
+	content = fitToSize(content, m.width, contentHeight)
 	return lipgloss.JoinVertical(lipgloss.Left, statusBar, content)
 }
 
@@ -598,12 +806,19 @@ func (m Model) renderStatusBar() string {
 		connStr = "reconnecting"
 	}
 
-	left := fmt.Sprintf(" %s  #%s  %d users", connStr, m.channel, len(m.users))
-	right := " ctrl+b channels  ctrl+y users  ctrl+l latest  ctrl+c quit "
-	if m.width < 96 {
-		right = " ctrl+b ch  ctrl+y users  ctrl+c quit "
+	onlineCount := len(m.onlineUsers())
+	left := fmt.Sprintf(" %s  #%s  %d online", connStr, m.channel, onlineCount)
+
+	notifBadge := ""
+	if len(m.notifications) > 0 {
+		notifBadge = mentionBadgeStyle().Render(fmt.Sprintf(" %d ", len(m.notifications))) + " "
 	}
-	if m.width < 72 {
+
+	right := " ctrl+r reply  ctrl+] mentions  ctrl+b ch  ctrl+l latest  ctrl+c quit "
+	if m.width < 110 {
+		right = " ctrl+r reply  ctrl+] mentions  ctrl+b ch  ctrl+c quit "
+	}
+	if m.width < 80 {
 		right = " ctrl+c quit "
 	}
 
@@ -616,15 +831,16 @@ func (m Model) renderStatusBar() string {
 		unreadPart = fmt.Sprintf(" | ↑ %d new", m.unreadCount)
 	}
 
-	leftW := lipgloss.Width(left) + lipgloss.Width(unreadPart)
+	leftStr := left + unreadPart
+	leftW := lipgloss.Width(leftStr) + lipgloss.Width(notifBadge)
 	rightW := lipgloss.Width(right)
-	gap := m.width - leftW - rightW
+	gap := m.width - 2 - leftW - rightW
 	if gap < 0 {
 		gap = 0
 	}
 
-	bar := left + unreadPart + strings.Repeat(" ", gap) + right
-	return statusBarStyle().Width(m.width).Render(bar)
+	bar := leftStr + notifBadge + strings.Repeat(" ", gap) + right
+	return statusBarStyle().Width(m.width).MaxWidth(m.width).MaxHeight(1).Render(bar)
 }
 
 func (m Model) renderChannels(width, height int) string {
@@ -644,12 +860,13 @@ func (m Model) renderChannels(width, height int) string {
 	}
 
 	content := strings.Join(items, "\n")
-	innerH := height - 2
-	if innerH < 1 {
-		innerH = 1
+	boxHeight := height - 1
+	if boxHeight < 1 {
+		boxHeight = 1
 	}
-	box := panelStyle().Width(width - 1).Height(innerH).Render(content)
-	return title + "\n" + box
+	content = clipLines(content, borderedContentHeight(boxHeight))
+	box := renderBorderedBox(panelStyle(), width, boxHeight, content)
+	return fitToSize(title+"\n"+box, width, height)
 }
 
 func (m Model) renderUsers(width, height int) string {
@@ -657,20 +874,92 @@ func (m Model) renderUsers(width, height int) string {
 		return ""
 	}
 
-	title := panelTitleStyle().Render(fmt.Sprintf(" Users %d ", len(m.users)))
+	online := m.onlineUsers()
+	label := "Online"
+	title := panelTitleStyle().Render(fmt.Sprintf(" %s %d ", label, len(online)))
+	innerW := panelContentWidth(width)
 	var items []string
-	for _, u := range m.users {
+	for _, u := range online {
 		colored := lipgloss.NewStyle().Foreground(usernameColor(u)).Render("@" + u)
 		items = append(items, userStyle(false).Render(colored))
+		if p, ok := m.presences[u]; ok && p.Status != "" {
+			truncated := truncateStatus(p.Status, maxInt(1, innerW-2))
+			items = append(items, presenceStatusStyle().Render("↳ "+truncated))
+		}
 	}
 
 	content := strings.Join(items, "\n")
-	innerH := height - 2
-	if innerH < 1 {
-		innerH = 1
+	boxHeight := height - 1
+	if boxHeight < 1 {
+		boxHeight = 1
 	}
-	box := panelStyle().Width(width).Height(innerH).Render(content)
-	return title + "\n" + box
+	content = clipLines(content, borderedContentHeight(boxHeight))
+	box := renderBorderedBox(panelStyle(), width, boxHeight, content)
+	return fitToSize(title+"\n"+box, width, height)
+}
+
+func (m Model) renderRightSidebar(width, height int) string {
+	if width < 10 {
+		return ""
+	}
+	usersHeight := 0
+	if m.usersVisible {
+		usersHeight = clampInt(len(m.onlineUsers())+4, 7, height/3)
+		if usersHeight < 7 {
+			usersHeight = 7
+		}
+	}
+	notificationsHeight := height - usersHeight
+	if notificationsHeight < 8 {
+		notificationsHeight = 8
+		if usersHeight > 0 {
+			usersHeight = height - notificationsHeight
+		}
+	}
+
+	if usersHeight <= 0 {
+		return m.renderNotifications(width, height)
+	}
+	usersPanel := m.renderUsers(width, usersHeight)
+	notificationsPanel := m.renderNotifications(width, notificationsHeight)
+	return fitToSize(lipgloss.JoinVertical(lipgloss.Left, usersPanel, notificationsPanel), width, height)
+}
+
+func (m Model) renderNotifications(width, height int) string {
+	if width < 10 {
+		return ""
+	}
+
+	title := panelTitleStyle().Render(fmt.Sprintf(" Mentions %d ", len(m.notifications)))
+	var items []string
+
+	if len(m.notifications) == 0 {
+		items = append(items, lipgloss.NewStyle().Foreground(themeDim).Italic(true).PaddingLeft(2).Render("no mentions yet"))
+	} else {
+		maxPreview := width - 6
+		if maxPreview < 6 {
+			maxPreview = 6
+		}
+		for i, n := range m.notifications {
+			selected := i == m.notifIdx
+			ts := n.Timestamp.Local().Format("15:04")
+			preview := strings.ReplaceAll(n.Content, "\n", " ")
+			if len([]rune(preview)) > maxPreview {
+				preview = string([]rune(preview)[:maxPreview]) + "…"
+			}
+			line := fmt.Sprintf("%s #%s\n  @%s: %s", ts, n.Channel, n.Username, preview)
+			items = append(items, notifItemStyle(selected).Width(panelContentWidth(width)).Render(line))
+		}
+	}
+
+	content := strings.Join(items, "\n")
+	boxHeight := height - 1
+	if boxHeight < 1 {
+		boxHeight = 1
+	}
+	content = clipLines(content, borderedContentHeight(boxHeight))
+	box := renderBorderedBox(panelStyle(), width, boxHeight, content)
+	return fitToSize(title+"\n"+box, width, height)
 }
 
 func (m Model) renderChatArea(width, height int) string {
@@ -680,41 +969,62 @@ func (m Model) renderChatArea(width, height int) string {
 	}
 	title := panelTitleStyle().Render(titleText)
 
-	// typing indicator is 1 line if active, 0 otherwise
 	typingLine := m.renderTypingIndicator()
 	typingHeight := 0
 	if typingLine != "" {
 		typingHeight = 1
 	}
 
-	commandSuggestions := m.renderCommandSuggestions(width - 4)
+	commandSuggestions := m.renderCommandSuggestions(width)
 	suggestionsHeight := 0
 	if commandSuggestions != "" {
 		suggestionsHeight = lipgloss.Height(commandSuggestions)
 	}
 
-	inputHeight := 3 // border + 1 line
-	chatH := height - inputHeight - typingHeight - suggestionsHeight - 2
+	// Reply bar above input
+	replyBar := ""
+	replyBarHeight := 0
+	if m.replyTo != nil {
+		snippet := strings.ReplaceAll(m.replyTo.Content, "\n", " ")
+		if len([]rune(snippet)) > width-20 {
+			snippet = string([]rune(snippet)[:width-20]) + "…"
+		}
+		replyBar = fitToSize(replyBarStyle().Width(width).MaxWidth(width).MaxHeight(1).Render(
+			fmt.Sprintf("↩ replying to @%s: %s  [Esc to cancel]", m.replyTo.Username, snippet),
+		), width, 1)
+		replyBarHeight = 1
+	}
+
+	inputLines := m.input.LineCount()
+	inputHeight := inputLines + 2
+	if inputHeight > 8 {
+		inputHeight = 8
+	}
+
+	chatBoxHeight := height - inputHeight - typingHeight - suggestionsHeight - replyBarHeight - 1
+	if chatBoxHeight < 1 {
+		chatBoxHeight = 1
+	}
+	chatH := borderedContentHeight(chatBoxHeight)
 	if chatH < 1 {
 		chatH = 1
 	}
+	chatW := panelContentWidth(width)
 
 	vp := ViewportModel{
-		width:     width - 4,
-		height:    chatH,
-		offset:    m.scrollOffset,
-		messages:  m.msgs,
-		loading:   m.loadingHistory,
-		allLoaded: m.allHistoryLoaded,
+		width:      chatW,
+		height:     chatH,
+		offset:     m.scrollOffset,
+		messages:   m.msgs,
+		loading:    m.loadingHistory,
+		allLoaded:  m.allHistoryLoaded,
+		myUsername: m.username,
 	}
 	chatContent := vp.View()
 
-	chatBox := panelStyle().
-		Width(width - 1).
-		Height(chatH).
-		Render(chatContent)
+	chatBox := renderBorderedBox(panelStyle(), width, chatBoxHeight, chatContent)
 
-	inputBox := m.input.View()
+	inputBox := m.input.ViewHeight(inputHeight)
 
 	parts := []string{title, chatBox}
 	if typingLine != "" {
@@ -723,9 +1033,12 @@ func (m Model) renderChatArea(width, height int) string {
 	if commandSuggestions != "" {
 		parts = append(parts, commandSuggestions)
 	}
+	if replyBar != "" {
+		parts = append(parts, replyBar)
+	}
 	parts = append(parts, inputBox)
 
-	return strings.Join(parts, "\n")
+	return fitToSize(strings.Join(parts, "\n"), width, height)
 }
 
 func (m Model) renderCommandSuggestions(width int) string {
@@ -742,7 +1055,7 @@ func (m Model) renderCommandSuggestions(width int) string {
 		if len(lines) == 0 {
 			lines = append(lines, "no matching channels")
 		}
-		return commandSuggestionStyle().Width(width).Render("channels: " + strings.Join(lines, "  "))
+		return renderBorderedBox(commandSuggestionStyle(), width, lipgloss.Height(strings.Join(lines, "\n"))+2, "channels: "+strings.Join(lines, "  "))
 	}
 
 	if !strings.HasPrefix(value, "/") || strings.Contains(value, " ") {
@@ -758,7 +1071,8 @@ func (m Model) renderCommandSuggestions(width int) string {
 	for _, c := range candidates {
 		lines = append(lines, fmt.Sprintf("/%s - %s", c.Name(), c.Description()))
 	}
-	return commandSuggestionStyle().Width(width).Render(strings.Join(lines, "\n"))
+	content := strings.Join(lines, "\n")
+	return renderBorderedBox(commandSuggestionStyle(), width, lipgloss.Height(content)+2, content)
 }
 
 func (m Model) renderTypingIndicator() string {
@@ -830,6 +1144,34 @@ func (m Model) listenTyping() tea.Cmd {
 	}
 }
 
+func (m Model) listenPresence() tea.Cmd {
+	if m.client == nil {
+		return nil
+	}
+	ch := m.client.Presences()
+	return func() tea.Msg {
+		p, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return presenceMsg(p)
+	}
+}
+
+func (m Model) listenTerminalUsers() tea.Cmd {
+	if m.client == nil {
+		return nil
+	}
+	ch := m.client.TerminalUsers()
+	return func() tea.Msg {
+		users, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return terminalUsersMsg(users)
+	}
+}
+
 func (m Model) loadLocalHistory(channel string, limit int) tea.Cmd {
 	if m.store == nil {
 		return nil
@@ -873,11 +1215,54 @@ func (m Model) subscribeSwitchCmd(oldChannel, newChannel string) tea.Cmd {
 }
 
 func (m Model) sendWithEcho(content string) (tea.Model, tea.Cmd) {
+	content = normalizeSingleLineCodeFence(content)
 	key := contentHash(m.username, m.channel, content)
 	m.sentHashes[key] = time.Now()
 
+	replyToID := ""
+	replyToContent := ""
+	replyToAuthor := ""
+	if m.replyTo != nil {
+		replyToID = m.replyTo.ID
+		replyToContent = m.replyTo.Content
+		replyToAuthor = m.replyTo.Username
+		m.replyTo = nil
+	}
+
 	echo := model.Message{
-		ID:        fmt.Sprintf("echo-%d", time.Now().UnixNano()),
+		ID:             fmt.Sprintf("echo-%d", time.Now().UnixNano()),
+		Username:       m.username,
+		Content:        content,
+		Channel:        m.channel,
+		Timestamp:      time.Now(),
+		ReplyToID:      replyToID,
+		ReplyToContent: replyToContent,
+		ReplyToAuthor:  replyToAuthor,
+	}
+	m.msgs = insertSorted(m.msgs, echo)
+	m.users = msgsToUsers(m.msgs)
+	m.scrollOffset = 0
+	m.unreadCount = 0
+
+	return m, tea.Batch(m.SendMessage(content, m.channel, replyToID), m.persistMessage(echo))
+}
+
+func normalizeSingleLineCodeFence(content string) string {
+	trimmed := strings.TrimSpace(content)
+	if !strings.HasPrefix(trimmed, "```") || !strings.HasSuffix(trimmed, "```") || strings.Contains(trimmed, "\n") || len(trimmed) <= 6 {
+		return content
+	}
+	inner := strings.TrimSuffix(strings.TrimPrefix(trimmed, "```"), "```")
+	parts := strings.SplitN(strings.TrimSpace(inner), " ", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return content
+	}
+	return fmt.Sprintf("```%s\n%s\n```", parts[0], parts[1])
+}
+
+func (m Model) sendFileWithEcho(path, content string) (tea.Model, tea.Cmd) {
+	echo := model.Message{
+		ID:        fmt.Sprintf("file-echo-%d", time.Now().UnixNano()),
 		Username:  m.username,
 		Content:   content,
 		Channel:   m.channel,
@@ -888,14 +1273,21 @@ func (m Model) sendWithEcho(content string) (tea.Model, tea.Cmd) {
 	m.scrollOffset = 0
 	m.unreadCount = 0
 
-	return m, tea.Batch(m.SendMessage(content), m.persistMessage(echo))
+	return m, tea.Batch(m.SendFile(path, m.channel, content), m.persistMessage(echo))
 }
 
-func (m Model) SendMessage(content string) tea.Cmd {
+func (m Model) SendMessage(content, channel, replyToID string) tea.Cmd {
 	if m.sender == nil {
 		return nil
 	}
-	return m.sender.SendAsync(content)
+	return m.sender.SendAsync(content, channel, replyToID)
+}
+
+func (m Model) SendFile(path, channel, content string) tea.Cmd {
+	if m.sender == nil {
+		return nil
+	}
+	return m.sender.SendFileAsync(path, channel, content)
 }
 
 func (m Model) persistMessage(msg model.Message) tea.Cmd {
@@ -906,6 +1298,24 @@ func (m Model) persistMessage(msg model.Message) tea.Cmd {
 		err := m.store.InsertMessage(msg)
 		return dbWriteResultMsg{Err: err}
 	}
+}
+
+func (m *Model) jumpToMessage(id string) bool {
+	if id == "" {
+		return false
+	}
+	for i, msg := range m.msgs {
+		if msg.ID == id {
+			fromBottom := len(m.msgs) - 1 - i
+			if fromBottom < 0 {
+				fromBottom = 0
+			}
+			m.scrollOffset = fromBottom
+			m.unreadCount = 0
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Model) addChannel(channel string) {
@@ -950,12 +1360,7 @@ func (m Model) validateJoin(args []string) error {
 	if channel == "" {
 		return fmt.Errorf("invalid channel name")
 	}
-	if !m.channelsOK {
-		return fmt.Errorf("channels are still loading; try /join again in a moment")
-	}
-	if _, ok := m.available[channel]; !ok {
-		return fmt.Errorf("unknown channel: #%s", channel)
-	}
+	// Allow joining any channel; if relay doesn't know it, send will fail gracefully
 	return nil
 }
 
@@ -986,8 +1391,8 @@ func (m Model) chatWidth() int {
 	if m.channelsVisible {
 		w -= m.channelSidebarWidth()
 	}
-	if m.usersVisible {
-		w -= m.userSidebarWidth()
+	if rightWidth := m.rightSidebarWidth(); rightWidth > 0 {
+		w -= rightWidth
 	}
 	if w < 20 {
 		w = 20
@@ -997,8 +1402,12 @@ func (m Model) chatWidth() int {
 
 func (m Model) chatHeight() int {
 	h := m.height - 1
-	inputH := 3
-	chatH := h - inputH - 1
+	inputH := m.input.LineCount() + 2
+	if inputH > 8 {
+		inputH = 8
+	}
+	chatBoxH := h - inputH - 1
+	chatH := borderedContentHeight(chatBoxH)
 	if chatH < 1 {
 		chatH = 1
 	}
@@ -1024,9 +1433,29 @@ func (m Model) userSidebarWidth() int {
 	if m.width < 96 {
 		return 0
 	}
-	w := m.width * 14 / 100
-	w = clampInt(w, 14, 22)
+	w := m.width * 20 / 100
+	w = clampInt(w, 22, 34)
 	return w
+}
+
+func (m Model) notifSidebarWidth() int {
+	if !m.notifVisible {
+		return 0
+	}
+	if m.width < 96 {
+		return 0
+	}
+	w := m.width * 28 / 100
+	w = clampInt(w, 28, 44)
+	return w
+}
+
+func (m Model) rightSidebarWidth() int {
+	if !m.notifVisible || m.width < 96 {
+		return 0
+	}
+	w := m.width * 20 / 100
+	return clampInt(w, 28, 38)
 }
 
 func (m *Model) nextChannel() {

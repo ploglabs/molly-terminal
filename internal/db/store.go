@@ -29,6 +29,13 @@ var schema = []string{
 		name      TEXT PRIMARY KEY,
 		joined_at DATETIME NOT NULL
 	)`,
+	`CREATE TABLE IF NOT EXISTS user_presence (
+		username   TEXT PRIMARY KEY,
+		status     TEXT NOT NULL DEFAULT '',
+		online     INTEGER NOT NULL DEFAULT 0,
+		last_seen  DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL
+	)`,
 	`CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel, timestamp)`,
 	`CREATE INDEX IF NOT EXISTS idx_messages_content ON messages(content)`,
 }
@@ -167,6 +174,61 @@ func (s *Store) DeleteChannel(name string) error {
 	_, err := s.db.Exec(`DELETE FROM channels WHERE name = ?`, name)
 	if err != nil {
 		return fmt.Errorf("deleting channel: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) UpsertPresence(p model.UserPresence) error {
+	online := 0
+	if p.Online {
+		online = 1
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO user_presence (username, status, online, last_seen, updated_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(username) DO UPDATE SET
+		   status=excluded.status, online=excluded.online,
+		   last_seen=excluded.last_seen, updated_at=excluded.updated_at`,
+		p.Username, p.Status, online, p.LastSeen.UTC(), p.UpdatedAt.UTC(),
+	)
+	if err != nil {
+		return fmt.Errorf("upserting presence: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) GetAllPresence() ([]model.UserPresence, error) {
+	rows, err := s.db.Query(
+		`SELECT username, status, online, last_seen, updated_at FROM user_presence ORDER BY username`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying presence: %w", err)
+	}
+	defer rows.Close()
+
+	var result []model.UserPresence
+	for rows.Next() {
+		var p model.UserPresence
+		var onlineInt int
+		if err := rows.Scan(&p.Username, &p.Status, &onlineInt, &p.LastSeen, &p.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scanning presence row: %w", err)
+		}
+		p.Online = onlineInt != 0
+		result = append(result, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating presence rows: %w", err)
+	}
+	return result, nil
+}
+
+func (s *Store) SetUserOffline(username string) error {
+	_, err := s.db.Exec(
+		`UPDATE user_presence SET online=0, last_seen=? WHERE username=?`,
+		time.Now().UTC(), username,
+	)
+	if err != nil {
+		return fmt.Errorf("setting user offline: %w", err)
 	}
 	return nil
 }

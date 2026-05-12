@@ -47,7 +47,7 @@ func main() {
 	defer store.Close()
 
 	client := wsclient.New(cfg.Server.WebsocketURL, cfg.General.Username, cfg.General.Channel)
-	sender := webhook.New(cfg.Server.WebhookURL, cfg.General.Username)
+	sender := webhook.New(cfg.Server.WebhookURL, cfg.Server.RelayURL, cfg.Server.APIKey, cfg.General.Username, cfg.General.DiscordAvatarURL)
 	fetcher := history.New(cfg.Server.RelayURL)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -63,6 +63,9 @@ func main() {
 	registry.Register(commands.NewQuitCmd())
 	registry.Register(commands.NewClearCmd())
 	registry.Register(commands.NewLeaveCmd(store))
+	registry.Register(commands.NewStatusCmd())
+	registry.Register(commands.NewFileCmd())
+	registry.Register(commands.NewSnippetCmd())
 
 	model := tui.New(client, sender, store, fetcher, registry, cfg.General.Channel, cfg.General.Username)
 	p := tea.NewProgram(model, tea.WithAltScreen())

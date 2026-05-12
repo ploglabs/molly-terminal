@@ -157,9 +157,50 @@ func commandSuggestionStyle() lipgloss.Style {
 		Padding(0, 1)
 }
 
+func presenceStatusStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(themeDim).
+		Italic(true).
+		PaddingLeft(2)
+}
+
 func newMsgBannerStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
 		Foreground(themeAccent).
 		Background(themeSelectedBg).
 		Bold(true)
+}
+
+func replyPreviewStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(themeDim).
+		Italic(true).
+		PaddingLeft(3).
+		BorderLeft(true).
+		BorderStyle(lipgloss.ThickBorder()).
+		BorderForeground(themeAccentDim)
+}
+
+func replyBarStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(themeWarn).
+		Background(themeStatusBg).
+		Bold(false).
+		Padding(0, 1)
+}
+
+func notifItemStyle(selected bool) lipgloss.Style {
+	s := lipgloss.NewStyle().Foreground(themeFg).PaddingLeft(1)
+	if selected {
+		s = s.Background(themeSelectedBg).Foreground(themeAccent).Bold(true)
+	}
+	return s
+}
+
+func mentionBadgeStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(themeStatusBg).
+		Background(themeWarn).
+		Bold(true).
+		Padding(0, 1)
 }

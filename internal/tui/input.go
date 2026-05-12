@@ -88,11 +88,21 @@ func (m *InputModel) MoveRight() {
 }
 
 func (m *InputModel) MoveHome() {
-	m.pos = 0
+	// Move to start of current line
+	p := m.pos
+	for p > 0 && m.text[p-1] != '\n' {
+		p--
+	}
+	m.pos = p
 }
 
 func (m *InputModel) MoveEnd() {
-	m.pos = len(m.text)
+	// Move to end of current line
+	p := m.pos
+	for p < len(m.text) && m.text[p] != '\n' {
+		p++
+	}
+	m.pos = p
 }
 
 func (m *InputModel) InsertNewline() {
@@ -110,13 +120,11 @@ func (m *InputModel) clearCompletions() {
 	m.compIdx = 0
 }
 
-// SetCompletions sets the completion candidates.
 func (m *InputModel) SetCompletions(completions []string) {
 	m.completions = completions
 	m.compIdx = 0
 }
 
-// ApplyNextCompletion replaces the current word at the cursor with the next completion.
 func (m *InputModel) ApplyNextCompletion() {
 	if len(m.completions) == 0 {
 		return
@@ -124,13 +132,11 @@ func (m *InputModel) ApplyNextCompletion() {
 	completion := m.completions[m.compIdx]
 	m.compIdx = (m.compIdx + 1) % len(m.completions)
 
-	// Find start of current word
 	wordStart := m.pos
-	for wordStart > 0 && m.text[wordStart-1] != ' ' {
+	for wordStart > 0 && m.text[wordStart-1] != ' ' && m.text[wordStart-1] != '\n' {
 		wordStart--
 	}
 
-	// Replace word with completion + space
 	newText := make([]rune, 0, wordStart+len([]rune(completion))+1)
 	newText = append(newText, m.text[:wordStart]...)
 	newText = append(newText, []rune(completion)...)
@@ -140,10 +146,9 @@ func (m *InputModel) ApplyNextCompletion() {
 	m.pos = wordStart + len([]rune(completion)) + 1
 }
 
-// WordAtCursor returns (word, prefix) where prefix is "@" or "#" if present.
 func (m *InputModel) WordAtCursor() (word, prefix string) {
 	wordStart := m.pos
-	for wordStart > 0 && m.text[wordStart-1] != ' ' {
+	for wordStart > 0 && m.text[wordStart-1] != ' ' && m.text[wordStart-1] != '\n' {
 		wordStart--
 	}
 	w := string(m.text[wordStart:m.pos])
@@ -151,6 +156,11 @@ func (m *InputModel) WordAtCursor() (word, prefix string) {
 		return w[1:], string(w[0:1])
 	}
 	return w, ""
+}
+
+// LineCount returns the number of lines currently in the input.
+func (m *InputModel) LineCount() int {
+	return strings.Count(string(m.text), "\n") + 1
 }
 
 func (m InputModel) CursorBlinkCmd() tea.Cmd {
@@ -171,47 +181,109 @@ func (m InputModel) Update(msg tea.Msg) (InputModel, tea.Cmd) {
 }
 
 func (m InputModel) View() string {
-	prefix := promptStyle().Render(m.prompt)
+	return m.view(0)
+}
 
+func (m InputModel) ViewHeight(maxHeight int) string {
+	return m.view(maxHeight)
+}
+
+func (m InputModel) view(maxHeight int) string {
 	style := inputStyle()
 	if m.focused {
 		style = inputFocusedStyle()
 	}
 
-	maxText := m.width - lipgloss.Width(prefix) - 3
-	if maxText < 1 {
-		maxText = 1
-	}
-	if m.pos > maxText {
-		maxText = m.pos
+	styleW := m.width - 2
+	if styleW < 1 {
+		styleW = 1
 	}
 
-	displayText := string(m.text)
-	cursorPos := m.pos
-	if len(displayText) > maxText {
-		start := m.pos - maxText + 1
-		if start < 0 {
-			start = 0
+	promptStr := promptStyle().Render(m.prompt)
+	promptW := lipgloss.Width(promptStr)
+	contentW := styleW - promptW - 2
+	if contentW < 4 {
+		contentW = 4
+	}
+
+	rawText := string(m.text)
+	lines := strings.Split(rawText, "\n")
+
+	// Compute cursor row/col within the text
+	cursorRow, cursorCol := 0, 0
+	pos := 0
+	for row, line := range lines {
+		lineLen := len([]rune(line))
+		if pos+lineLen >= m.pos {
+			cursorRow = row
+			cursorCol = m.pos - pos
+			break
 		}
-		displayText = displayText[start:]
-		cursorPos = m.pos - start
+		pos += lineLen + 1 // +1 for \n
 	}
 
-	if m.focused && m.showCursor {
-		c := cursorChar
-		if cursorPos >= len([]rune(displayText)) {
-			displayText += c
+	// Build display lines, inserting cursor
+	var displayLines []string
+	for row, line := range lines {
+		runes := []rune(line)
+
+		// Scroll horizontally if line is too long
+		start := 0
+		if row == cursorRow && cursorCol > contentW-1 {
+			start = cursorCol - contentW + 1
+			if start < 0 {
+				start = 0
+			}
+		}
+		if start > len(runes) {
+			start = len(runes)
+		}
+		visible := runes[start:]
+		if len(visible) > contentW {
+			visible = visible[:contentW]
+		}
+
+		var lineStr string
+		if m.focused && m.showCursor && row == cursorRow {
+			col := cursorCol - start
+			if col < 0 {
+				col = 0
+			}
+			if col > len(visible) {
+				col = len(visible)
+			}
+			lineStr = string(visible[:col]) + cursorChar + string(visible[col:])
 		} else {
-			r := []rune(displayText)
-			displayText = string(r[:cursorPos]) + c + string(r[cursorPos:])
+			lineStr = string(visible)
+		}
+
+		if row == 0 {
+			displayLines = append(displayLines, promptStr+lineStr)
+		} else {
+			displayLines = append(displayLines, strings.Repeat(" ", promptW)+lineStr)
 		}
 	}
-	if len([]rune(displayText)) > maxText {
-		displayText = string([]rune(displayText)[:maxText])
+
+	if maxHeight > 0 {
+		maxContentLines := maxHeight - 2
+		if maxContentLines < 1 {
+			maxContentLines = 1
+		}
+		if len(displayLines) > maxContentLines {
+			start := cursorRow - maxContentLines + 1
+			if start < 0 {
+				start = 0
+			}
+			if start+maxContentLines > len(displayLines) {
+				start = len(displayLines) - maxContentLines
+			}
+			displayLines = displayLines[start : start+maxContentLines]
+		}
+		style = style.Height(maxContentLines).MaxHeight(maxHeight)
 	}
 
-	content := prefix + displayText
-	return style.Width(m.width).Render(content)
+	content := strings.Join(displayLines, "\n")
+	return style.Width(styleW).MaxWidth(m.width).Render(content)
 }
 
 const cursorChar = "\033[7m \033[0m"
@@ -219,13 +291,15 @@ const cursorChar = "\033[7m \033[0m"
 func handleInputKey(msg tea.KeyMsg, m *InputModel) (bool, string) {
 	switch msg.Type {
 	case tea.KeyEnter:
-		if msg.Alt || m.modifierHeld(msg, "shift") {
+		// Shift+Enter, Alt+Enter, or Ctrl+J inserts newline; plain Enter submits.
+		if msg.Alt || msg.String() == "shift+enter" || msg.String() == "shift+ctrl+j" {
 			m.InsertNewline()
 			return false, ""
 		}
 		val := m.Value()
 		m.Clear()
 		return true, val
+
 	case tea.KeyBackspace:
 		m.Backspace()
 	case tea.KeyDelete:
@@ -247,12 +321,17 @@ func handleInputKey(msg tea.KeyMsg, m *InputModel) (bool, string) {
 	}
 
 	switch msg.String() {
+	case "shift+enter", "shift+ctrl+j":
+		m.InsertNewline()
+	case "ctrl+j":
+		// Ctrl+J = newline (classic terminal shortcut)
+		m.InsertNewline()
 	case "ctrl+w":
 		wordStart := m.pos
-		for wordStart > 0 && m.text[wordStart-1] == ' ' {
+		for wordStart > 0 && (m.text[wordStart-1] == ' ' || m.text[wordStart-1] == '\n') {
 			wordStart--
 		}
-		for wordStart > 0 && m.text[wordStart-1] != ' ' {
+		for wordStart > 0 && m.text[wordStart-1] != ' ' && m.text[wordStart-1] != '\n' {
 			wordStart--
 		}
 		m.text = append(m.text[:wordStart], m.text[m.pos:]...)
@@ -262,14 +341,15 @@ func handleInputKey(msg tea.KeyMsg, m *InputModel) (bool, string) {
 	case "ctrl+e":
 		m.MoveEnd()
 	case "ctrl+k":
-		m.text = m.text[:m.pos]
+		// Delete to end of current line
+		end := m.pos
+		for end < len(m.text) && m.text[end] != '\n' {
+			end++
+		}
+		m.text = append(m.text[:m.pos], m.text[end:]...)
 	case "ctrl+u":
 		m.Clear()
 	}
 
 	return false, ""
-}
-
-func (m *InputModel) modifierHeld(msg tea.KeyMsg, mod string) bool {
-	return strings.Contains(msg.String(), mod+"+")
 }

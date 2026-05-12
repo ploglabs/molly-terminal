@@ -10,12 +10,13 @@ import (
 )
 
 type ViewportModel struct {
-	width     int
-	height    int
-	offset    int
-	messages  []model.Message
-	loading   bool
-	allLoaded bool
+	width      int
+	height     int
+	offset     int
+	messages   []model.Message
+	loading    bool
+	allLoaded  bool
+	myUsername string
 }
 
 func newViewport() ViewportModel {
@@ -81,7 +82,6 @@ func (v *ViewportModel) View() string {
 			Render("no messages yet...")
 	}
 
-	// Window: show `visible` messages ending at total - offset
 	end := total - v.offset
 	if end > total {
 		end = total
@@ -90,7 +90,6 @@ func (v *ViewportModel) View() string {
 		end = 0
 	}
 
-	// Reserve a line for the "newer messages" indicator when scrolled up
 	effectiveVisible := visible
 	showNewerBanner := v.offset > 0
 	if showNewerBanner {
@@ -109,27 +108,47 @@ func (v *ViewportModel) View() string {
 	tsStyle := lipgloss.NewStyle().Foreground(themeDim)
 	var lines []string
 
-	// Loading older history indicator at top
 	if v.loading {
 		lines = append(lines, loadingStyle().Render("  loading older messages..."))
 	}
 
 	for _, m := range v.messages[start:end] {
-		var line string
+		var msgLines []string
+
 		if m.Username == "system" {
-			line = systemMessageStyle().Render(m.Content)
+			msgLines = append(msgLines, systemMessageStyle().Render(m.Content))
 		} else {
+			// Reply preview line
+			if m.ReplyToID != "" {
+				author := m.ReplyToAuthor
+				if author == "" {
+					author = "unknown"
+				}
+				snippet := m.ReplyToContent
+				maxSnip := v.width - 12
+				if maxSnip < 10 {
+					maxSnip = 10
+				}
+				if len([]rune(snippet)) > maxSnip {
+					snippet = string([]rune(snippet)[:maxSnip]) + "…"
+				}
+				// Strip newlines from snippet
+				snippet = strings.ReplaceAll(snippet, "\n", " ")
+				replyLine := replyPreviewStyle().Render(fmt.Sprintf("↩ %s: %s", author, snippet))
+				msgLines = append(msgLines, replyLine)
+			}
+
 			ts := tsStyle.Render(formatTime(m.Timestamp))
 			username := coloredUsername(m.Username)
-			content := renderMarkdown(m.Content, v.width-12)
+			content := renderMarkdown(m.Content, v.myUsername, v.width-12)
 			raw := fmt.Sprintf("%s <%s> %s", ts, username, content)
 			wrapped := wrapText(raw, v.width)
-			line = msgStyle.Width(v.width).Render(wrapped)
+			msgLines = append(msgLines, msgStyle.Width(v.width).Render(wrapped))
 		}
-		lines = append(lines, line)
+
+		lines = append(lines, msgLines...)
 	}
 
-	// Newer messages indicator at bottom when scrolled up
 	if showNewerBanner {
 		indicator := fmt.Sprintf("  ↑ %d new — PgDn/↓ to scroll down", v.offset)
 		lines = append(lines, newMsgBannerStyle().Width(v.width).Render(indicator))
@@ -137,7 +156,6 @@ func (v *ViewportModel) View() string {
 
 	content := strings.Join(lines, "\n")
 
-	// Pad top with empty lines so content is bottom-anchored
 	currentLines := len(strings.Split(content, "\n"))
 	if currentLines < visible {
 		content = strings.Repeat("\n", visible-currentLines) + content
@@ -174,6 +192,9 @@ func msgsToUsers(msgs []model.Message) []string {
 	seen := make(map[string]struct{})
 	var users []string
 	for _, m := range msgs {
+		if m.Username == "system" {
+			continue
+		}
 		if _, ok := seen[m.Username]; !ok {
 			seen[m.Username] = struct{}{}
 			users = append(users, m.Username)
@@ -204,6 +225,28 @@ func clampInt(v, lo, hi int) int {
 		return hi
 	}
 	return v
+}
+
+func truncateStatus(s string, max int) string {
+	if max <= 0 {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max-1]) + "…"
+}
+
+func clipLines(s string, maxLines int) string {
+	if maxLines <= 0 {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= maxLines {
+		return s
+	}
+	return strings.Join(lines[:maxLines], "\n")
 }
 
 func formatTime(t time.Time) string {

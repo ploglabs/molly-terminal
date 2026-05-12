@@ -32,6 +32,7 @@ type ServerConfig struct {
 	WebsocketURL string `toml:"websocket_url"`
 	WebhookURL   string `toml:"webhook_url"`
 	RelayURL     string `toml:"relay_url"`
+	APIKey       string `toml:"api_key"`
 }
 
 type AuthConfig struct {
@@ -192,6 +193,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("MOLLY_RELAY_URL"); v != "" {
 		cfg.Server.RelayURL = v
+	}
+	if v := os.Getenv("MOLLY_API_KEY"); v != "" {
+		cfg.Server.APIKey = v
 	}
 	if v := os.Getenv("MOLLY_AUTH_ENABLED"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {

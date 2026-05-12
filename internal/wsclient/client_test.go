@@ -192,14 +192,18 @@ func TestSubscribeUnsubscribe(t *testing.T) {
 	actions := receivedActions
 	mu.Unlock()
 
-	if len(actions) < 2 {
-		t.Fatalf("expected at least 2 actions, got %d", len(actions))
+	// identify is sent on connect, then subscribe, then unsubscribe
+	if len(actions) < 3 {
+		t.Fatalf("expected at least 3 actions (identify, subscribe, unsubscribe), got %d: %v", len(actions), actions)
 	}
-	if actions[0] != "subscribe" {
-		t.Errorf("expected first action 'subscribe', got %q", actions[0])
+	if actions[0] != "identify" {
+		t.Errorf("expected first action 'identify', got %q", actions[0])
 	}
-	if actions[1] != "unsubscribe" {
-		t.Errorf("expected second action 'unsubscribe', got %q", actions[1])
+	if actions[1] != "subscribe" {
+		t.Errorf("expected second action 'subscribe', got %q", actions[1])
+	}
+	if actions[2] != "unsubscribe" {
+		t.Errorf("expected third action 'unsubscribe', got %q", actions[2])
 	}
 }
 

@@ -29,6 +29,15 @@ type DeleteChannelMsg struct {
 	Channel string
 }
 
+type SendRawMsg struct {
+	Content string
+}
+
+type SendFileMsg struct {
+	Path    string
+	Content string
+}
+
 func SystemMsg(content string) model.Message {
 	return model.Message{
 		ID:        "system-" + time.Now().Format("20060102150405.999999999"),

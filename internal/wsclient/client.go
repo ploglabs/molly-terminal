@@ -33,29 +33,33 @@ type StatusChange struct {
 }
 
 type Client struct {
-	url       string
-	username  string
-	channel   string
-	conn      *websocket.Conn
-	connMu    sync.Mutex
-	msgCh     chan model.Message
-	typingCh  chan model.TypingEvent
-	statusCh  chan StatusChange
-	done      chan struct{}
-	closeOnce sync.Once
-	log       *log.Logger
+	url        string
+	username   string
+	channel    string
+	conn       *websocket.Conn
+	connMu     sync.Mutex
+	msgCh      chan model.Message
+	typingCh   chan model.TypingEvent
+	statusCh   chan StatusChange
+	presenceCh chan model.UserPresence
+	termUsersCh chan []string
+	done       chan struct{}
+	closeOnce  sync.Once
+	log        *log.Logger
 }
 
 func New(url, username, channel string) *Client {
 	return &Client{
-		url:      url,
-		username: username,
-		channel:  channel,
-		msgCh:    make(chan model.Message, 256),
-		typingCh: make(chan model.TypingEvent, 32),
-		statusCh: make(chan StatusChange, 16),
-		done:     make(chan struct{}),
-		log:      log.Default(),
+		url:         url,
+		username:    username,
+		channel:     channel,
+		msgCh:       make(chan model.Message, 256),
+		typingCh:    make(chan model.TypingEvent, 32),
+		statusCh:    make(chan StatusChange, 16),
+		presenceCh:  make(chan model.UserPresence, 32),
+		termUsersCh: make(chan []string, 16),
+		done:        make(chan struct{}),
+		log:         log.Default(),
 	}
 }
 
@@ -64,6 +68,7 @@ func (c *Client) Connect() error {
 		return fmt.Errorf("initial connection failed: %w", err)
 	}
 	c.emitStatus(StatusConnected, nil)
+	_ = c.identify()
 	go c.readLoop()
 	return nil
 }
@@ -91,6 +96,7 @@ func (c *Client) ConnectWithRetry(ctx context.Context) {
 		}
 
 		c.emitStatus(StatusConnected, nil)
+		_ = c.identify()
 		backoff = initialBackoff
 		c.readLoop()
 
@@ -122,6 +128,47 @@ func (c *Client) TypingEvents() <-chan model.TypingEvent {
 
 func (c *Client) StatusChanges() <-chan StatusChange {
 	return c.statusCh
+}
+
+func (c *Client) Presences() <-chan model.UserPresence {
+	return c.presenceCh
+}
+
+func (c *Client) TerminalUsers() <-chan []string {
+	return c.termUsersCh
+}
+
+func (c *Client) identify() error {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	if c.conn == nil {
+		return nil
+	}
+	msg := struct {
+		Action   string `json:"action"`
+		Username string `json:"username"`
+	}{Action: "identify", Username: c.username}
+	c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+	return c.conn.WriteJSON(msg)
+}
+
+func (c *Client) SendStatus(status string) error {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	if c.conn == nil {
+		return fmt.Errorf("not connected")
+	}
+	msg := struct {
+		Action   string `json:"action"`
+		Status   string `json:"status"`
+		Username string `json:"username"`
+	}{
+		Action:   "status_update",
+		Status:   status,
+		Username: c.username,
+	}
+	c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+	return c.conn.WriteJSON(msg)
 }
 
 func (c *Client) Subscribe(channel string) error {
@@ -198,16 +245,21 @@ func (c *Client) dial() error {
 	return nil
 }
 
-// relayEvent is the wire format broadcast by molly-discord-relay.
 type relayEvent struct {
-	Type      string `json:"type"`
-	Channel   string `json:"channel"`
-	ChannelID string `json:"channel_id"`
-	Username  string `json:"username"`
-	UserID    string `json:"user_id"`
-	Content   string `json:"content"`
-	MessageID string `json:"message_id"`
-	Timestamp string `json:"timestamp"`
+	Type           string `json:"type"`
+	Channel        string `json:"channel"`
+	ChannelID      string `json:"channel_id"`
+	Username       string `json:"username"`
+	UserID         string `json:"user_id"`
+	Content        string `json:"content"`
+	MessageID      string `json:"message_id"`
+	Timestamp      string `json:"timestamp"`
+	Status         string `json:"status"`
+	UpdatedAt      string `json:"updated_at"`
+	ReplyToID      string `json:"reply_to_id"`
+	ReplyToContent string `json:"reply_to_content"`
+	ReplyToAuthor  string `json:"reply_to_author"`
+	Users          []string `json:"users"`
 }
 
 func (c *Client) readLoop() {
@@ -268,11 +320,14 @@ func (c *Client) readLoop() {
 		case "message_create":
 			ts, _ := time.Parse(time.RFC3339, evt.Timestamp)
 			msg := model.Message{
-				ID:        evt.MessageID,
-				Username:  evt.Username,
-				Content:   evt.Content,
-				Channel:   evt.Channel,
-				Timestamp: ts,
+				ID:             evt.MessageID,
+				Username:       evt.Username,
+				Content:        evt.Content,
+				Channel:        evt.Channel,
+				Timestamp:      ts,
+				ReplyToID:      evt.ReplyToID,
+				ReplyToContent: evt.ReplyToContent,
+				ReplyToAuthor:  evt.ReplyToAuthor,
 			}
 			select {
 			case c.msgCh <- msg:
@@ -282,8 +337,36 @@ func (c *Client) readLoop() {
 				c.log.Printf("ws: message channel full, dropping message")
 			}
 
-		default:
-			// ignore message_update, message_delete, reaction_*, user_join, user_leave
+		case "terminal_online":
+			users := evt.Users
+			if users == nil {
+				users = []string{}
+			}
+			select {
+			case c.termUsersCh <- users:
+			case <-c.done:
+				return
+			default:
+			}
+
+		case "status_update":
+			updatedAt, _ := time.Parse(time.RFC3339, evt.UpdatedAt)
+			if updatedAt.IsZero() {
+				updatedAt = time.Now()
+			}
+			p := model.UserPresence{
+				Username:  evt.Username,
+				Status:    evt.Status,
+				Online:    true,
+				LastSeen:  updatedAt,
+				UpdatedAt: updatedAt,
+			}
+			select {
+			case c.presenceCh <- p:
+			case <-c.done:
+				return
+			default:
+			}
 		}
 	}
 }
