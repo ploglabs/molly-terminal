@@ -163,6 +163,14 @@ func (s *Store) GetChannels() ([]string, error) {
 	return channels, nil
 }
 
+func (s *Store) DeleteChannel(name string) error {
+	_, err := s.db.Exec(`DELETE FROM channels WHERE name = ?`, name)
+	if err != nil {
+		return fmt.Errorf("deleting channel: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) Close() error {
 	if s.db != nil {
 		return s.db.Close()

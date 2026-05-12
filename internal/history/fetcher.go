@@ -24,6 +24,11 @@ type FetchResultMsg struct {
 	Err      error
 }
 
+type ChannelsResultMsg struct {
+	Channels []string
+	Err      error
+}
+
 func New(baseURL string) *Fetcher {
 	return &Fetcher{
 		baseURL: baseURL,
@@ -61,12 +66,52 @@ func (f *Fetcher) Fetch(channel string, limit int, before *time.Time) ([]model.M
 	return msgs, nil
 }
 
+func (f *Fetcher) FetchChannels() ([]string, error) {
+	if f.baseURL == "" {
+		return nil, nil
+	}
+
+	url := fmt.Sprintf("%s/api/channels", f.baseURL)
+	resp, err := f.httpClient.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("fetching channels: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("relay API returned HTTP %d", resp.StatusCode)
+	}
+
+	var channels []model.Channel
+	if err := json.NewDecoder(resp.Body).Decode(&channels); err != nil {
+		return nil, fmt.Errorf("decoding channels response: %w", err)
+	}
+
+	names := make([]string, 0, len(channels))
+	for _, ch := range channels {
+		if ch.Name != "" {
+			names = append(names, ch.Name)
+		}
+	}
+	return names, nil
+}
+
 func (f *Fetcher) FetchAsync(channel string, limit int, before *time.Time) tea.Cmd {
 	return func() tea.Msg {
 		msgs, err := f.Fetch(channel, limit, before)
 		return FetchResultMsg{
 			Messages: msgs,
 			Channel:  channel,
+			Err:      err,
+		}
+	}
+}
+
+func (f *Fetcher) FetchChannelsAsync() tea.Cmd {
+	return func() tea.Msg {
+		channels, err := f.FetchChannels()
+		return ChannelsResultMsg{
+			Channels: channels,
 			Err:      err,
 		}
 	}
@@ -80,6 +125,13 @@ func InitialFetch(f *Fetcher, channel string, limit int) tea.Cmd {
 		limit = defaultLimit
 	}
 	return f.FetchAsync(channel, limit, nil)
+}
+
+func FetchChannels(f *Fetcher) tea.Cmd {
+	if f == nil || f.baseURL == "" {
+		return nil
+	}
+	return f.FetchChannelsAsync()
 }
 
 func LoadOlder(f *Fetcher, channel string, oldestTimestamp time.Time) tea.Cmd {

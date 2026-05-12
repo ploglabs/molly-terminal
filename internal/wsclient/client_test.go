@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/ploglabs/molly-terminal/internal/model"
 )
 
 var upgrader = websocket.Upgrader{
@@ -38,14 +37,16 @@ func TestClientConnectsAndReceivesMessages(t *testing.T) {
 			return
 		}
 		defer ws.Close()
-		msg := model.Message{
-			ID:        "1",
+		// Send in relay event format (what molly-discord-relay broadcasts)
+		evt := relayEvent{
+			Type:      "message_create",
+			MessageID: "1",
 			Username:  "alice",
 			Content:   "hello",
 			Channel:   "general",
-			Timestamp: time.Now(),
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		}
-		data, _ := json.Marshal(msg)
+		data, _ := json.Marshal(evt)
 		_ = ws.WriteMessage(websocket.TextMessage, data)
 		time.Sleep(100 * time.Millisecond)
 	}))
@@ -98,14 +99,15 @@ func TestClientReconnection(t *testing.T) {
 			return
 		}
 		defer ws.Close()
-		msg := model.Message{
-			ID:        "reconnect-msg",
+		evt := relayEvent{
+			Type:      "message_create",
+			MessageID: "reconnect-msg",
 			Username:  "bob",
 			Content:   "back online",
 			Channel:   "general",
-			Timestamp: time.Now(),
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		}
-		data, _ := json.Marshal(msg)
+		data, _ := json.Marshal(evt)
 		_ = ws.WriteMessage(websocket.TextMessage, data)
 		time.Sleep(100 * time.Millisecond)
 	}))

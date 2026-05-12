@@ -7,18 +7,19 @@ import (
 )
 
 var (
-	themeBg          = lipgloss.Color("#0a0e14")
-	themeFg          = lipgloss.Color("#b3b3b3")
-	themeAccent      = lipgloss.Color("#39c965")
-	themeAccentDim   = lipgloss.Color("#1e8a3e")
-	themeCyan        = lipgloss.Color("#59c2ff")
-	themeDim         = lipgloss.Color("#505050")
-	themeBorder      = lipgloss.Color("#1a3a1a")
-	themeStatusBg    = lipgloss.Color("#0f1a0f")
-	themeErr         = lipgloss.Color("#ff5454")
-	themeWarn        = lipgloss.Color("#ffaa33")
-	themeInputBorder = lipgloss.Color("#2a5a2a")
-	themeSelectedBg  = lipgloss.Color("#1a2a1a")
+	themeBg               = lipgloss.Color("#000000")
+	themeFg               = lipgloss.Color("#b3b3b3")
+	themeAccent           = lipgloss.Color("#ffffff")
+	themeAccentDim        = lipgloss.Color("#666666")
+	themeCyan             = lipgloss.Color("#888888")
+	themeDim              = lipgloss.Color("#555555")
+	themeBorder           = lipgloss.Color("#333333")
+	themeStatusBg         = lipgloss.Color("#0a0a0a")
+	themeErr              = lipgloss.Color("#ff5454")
+	themeWarn             = lipgloss.Color("#ffaa33")
+	themeInputBorder      = lipgloss.Color("#444444")
+	themeInputBorderFocus = lipgloss.Color("#b0b0b0")
+	themeSelectedBg       = lipgloss.Color("#1a1a1a")
 
 	usernameColors = []lipgloss.Color{
 		lipgloss.Color("#ff6b6b"),
@@ -45,7 +46,7 @@ func baseStyle() lipgloss.Style {
 
 func panelStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
-		BorderStyle(lipgloss.RoundedBorder()).
+		BorderStyle(lipgloss.NormalBorder()).
 		BorderForeground(themeBorder).
 		Background(themeBg).
 		Padding(0, 1)
@@ -83,7 +84,7 @@ func messageStyle() lipgloss.Style {
 
 func inputStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
-		BorderStyle(lipgloss.RoundedBorder()).
+		BorderStyle(lipgloss.NormalBorder()).
 		BorderForeground(themeInputBorder).
 		Background(themeBg).
 		Padding(0, 1)
@@ -91,8 +92,8 @@ func inputStyle() lipgloss.Style {
 
 func inputFocusedStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(themeAccent).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(themeInputBorderFocus).
 		Background(themeBg).
 		Padding(0, 1)
 }
@@ -145,6 +146,15 @@ func typingStyle() lipgloss.Style {
 		Foreground(themeDim).
 		Italic(true).
 		PaddingLeft(1)
+}
+
+func commandSuggestionStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(themeFg).
+		Background(themeStatusBg).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(themeBorder).
+		Padding(0, 1)
 }
 
 func newMsgBannerStyle() lipgloss.Style {

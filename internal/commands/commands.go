@@ -25,6 +25,10 @@ type ClearMessagesMsg struct{}
 
 type TriggerHistoryLoadMsg struct{}
 
+type DeleteChannelMsg struct {
+	Channel string
+}
+
 func SystemMsg(content string) model.Message {
 	return model.Message{
 		ID:        "system-" + time.Now().Format("20060102150405.999999999"),

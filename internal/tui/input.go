@@ -147,7 +147,7 @@ func (m *InputModel) WordAtCursor() (word, prefix string) {
 		wordStart--
 	}
 	w := string(m.text[wordStart:m.pos])
-	if len(w) > 0 && (w[0] == '@' || w[0] == '#') {
+	if len(w) > 0 && (w[0] == '@' || w[0] == '#' || w[0] == '/') {
 		return w[1:], string(w[0:1])
 	}
 	return w, ""

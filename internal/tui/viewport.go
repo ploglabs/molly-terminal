@@ -207,9 +207,10 @@ func clampInt(v, lo, hi int) int {
 }
 
 func formatTime(t time.Time) string {
+	local := t.Local()
 	now := time.Now()
-	if t.Year() == now.Year() && t.YearDay() == now.YearDay() {
-		return t.Format("15:04")
+	if local.Year() == now.Year() && local.YearDay() == now.YearDay() {
+		return local.Format("15:04")
 	}
-	return t.Format("01/02 15:04")
+	return local.Format("01/02 15:04")
 }

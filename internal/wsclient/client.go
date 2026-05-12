@@ -198,6 +198,18 @@ func (c *Client) dial() error {
 	return nil
 }
 
+// relayEvent is the wire format broadcast by molly-discord-relay.
+type relayEvent struct {
+	Type      string `json:"type"`
+	Channel   string `json:"channel"`
+	ChannelID string `json:"channel_id"`
+	Username  string `json:"username"`
+	UserID    string `json:"user_id"`
+	Content   string `json:"content"`
+	MessageID string `json:"message_id"`
+	Timestamp string `json:"timestamp"`
+}
+
 func (c *Client) readLoop() {
 	defer func() {
 		c.connMu.Lock()
@@ -233,32 +245,45 @@ func (c *Client) readLoop() {
 			return
 		}
 
-		var raw2 model.RawEvent
-		if err := json.Unmarshal(raw, &raw2); err == nil && raw2.Type == "typing" {
-			var te model.TypingEvent
-			if err := json.Unmarshal(raw, &te); err == nil {
-				select {
-				case c.typingCh <- te:
-				case <-c.done:
-					return
-				default:
-				}
-				continue
-			}
-		}
-
-		var msg model.Message
-		if err := json.Unmarshal(raw, &msg); err != nil {
-			c.log.Printf("ws: invalid message: %v", err)
+		var evt relayEvent
+		if err := json.Unmarshal(raw, &evt); err != nil {
+			c.log.Printf("ws: invalid event: %v", err)
 			continue
 		}
 
-		select {
-		case c.msgCh <- msg:
-		case <-c.done:
-			return
+		switch evt.Type {
+		case "typing_start", "typing":
+			te := model.TypingEvent{
+				Type:     "typing",
+				Username: evt.Username,
+				Channel:  evt.Channel,
+			}
+			select {
+			case c.typingCh <- te:
+			case <-c.done:
+				return
+			default:
+			}
+
+		case "message_create":
+			ts, _ := time.Parse(time.RFC3339, evt.Timestamp)
+			msg := model.Message{
+				ID:        evt.MessageID,
+				Username:  evt.Username,
+				Content:   evt.Content,
+				Channel:   evt.Channel,
+				Timestamp: ts,
+			}
+			select {
+			case c.msgCh <- msg:
+			case <-c.done:
+				return
+			default:
+				c.log.Printf("ws: message channel full, dropping message")
+			}
+
 		default:
-			c.log.Printf("ws: message channel full, dropping message")
+			// ignore message_update, message_delete, reaction_*, user_join, user_leave
 		}
 	}
 }

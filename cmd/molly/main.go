@@ -62,8 +62,9 @@ func main() {
 	registry.Register(commands.NewSearchCmd(store))
 	registry.Register(commands.NewQuitCmd())
 	registry.Register(commands.NewClearCmd())
+	registry.Register(commands.NewLeaveCmd(store))
 
-	model := tui.New(client, sender, store, fetcher, registry, cfg.General.Channel)
+	model := tui.New(client, sender, store, fetcher, registry, cfg.General.Channel, cfg.General.Username)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	sigCh := make(chan os.Signal, 1)
