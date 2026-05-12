@@ -1,7 +1,12 @@
 /molly
+/bin/
+dist/
 *.exe
 *.dll
 *.so
 *.dylib
 .env
 *.db
+*.test
+*.out
+.envrc
