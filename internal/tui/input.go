@@ -125,6 +125,10 @@ func (m *InputModel) SetCompletions(completions []string) {
 	m.compIdx = 0
 }
 
+func (m InputModel) CurrentCompletion() (completions []string, idx int) {
+	return m.completions, m.compIdx
+}
+
 func (m *InputModel) ApplyNextCompletion() {
 	if len(m.completions) == 0 {
 		return

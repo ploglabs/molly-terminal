@@ -17,6 +17,9 @@ type ViewportModel struct {
 	loading    bool
 	allLoaded  bool
 	myUsername string
+
+	selectMode  bool
+	selectedIdx int
 }
 
 func newViewport() ViewportModel {
@@ -99,9 +102,15 @@ func (v *ViewportModel) View() string {
 		}
 	}
 
-	start := end - effectiveVisible
-	if start < 0 {
-		start = 0
+	start := end
+	linesUsed := 0
+	for i := end - 1; i >= 0; i-- {
+		n := messageLineCount(v.messages[i], v.width, v.myUsername)
+		if linesUsed+n > effectiveVisible {
+			break
+		}
+		linesUsed += n
+		start = i
 	}
 
 	msgStyle := messageStyle()
@@ -112,8 +121,11 @@ func (v *ViewportModel) View() string {
 		lines = append(lines, loadingStyle().Render("  loading older messages..."))
 	}
 
-	for _, m := range v.messages[start:end] {
+	for i, m := range v.messages[start:end] {
+		idx := start + i
 		var msgLines []string
+
+		isSelected := v.selectMode && v.selectedIdx >= 0 && v.selectedIdx < len(v.messages) && idx == v.selectedIdx
 
 		if m.Username == "system" {
 			msgLines = append(msgLines, systemMessageStyle().Render(m.Content))
@@ -146,7 +158,11 @@ func (v *ViewportModel) View() string {
 			msgLines = append(msgLines, msgStyle.Width(v.width).Render(wrapped))
 		}
 
-		lines = append(lines, msgLines...)
+		block := strings.Join(msgLines, "\n")
+		if isSelected {
+			block = replySelectStyle().Width(v.width).Padding(0, 1).Render(block)
+		}
+		lines = append(lines, block)
 	}
 
 	if showNewerBanner {
@@ -162,6 +178,25 @@ func (v *ViewportModel) View() string {
 	}
 
 	return content
+}
+
+func messageLineCount(m model.Message, width int, myUsername string) int {
+	if width <= 0 {
+		return 1
+	}
+	if m.Username == "system" {
+		return strings.Count(m.Content, "\n") + 1
+	}
+	count := 0
+	if m.ReplyToID != "" {
+		count++
+	}
+	ts := formatTime(m.Timestamp)
+	content := renderMarkdown(m.Content, myUsername, width-12)
+	raw := fmt.Sprintf("%s <%s> %s", ts, m.Username, content)
+	wrapped := wrapText(raw, width)
+	count += len(strings.Split(wrapped, "\n"))
+	return count
 }
 
 func wrapText(text string, width int) string {

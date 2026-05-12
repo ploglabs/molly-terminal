@@ -89,7 +89,11 @@ type Model struct {
 	replyTo       *model.Message
 	notifications []model.Notification
 	notifIdx      int
+	notifFocused  bool
 	jumpToID      string
+
+	replySelectMode bool
+	replySelectIdx  int
 }
 
 func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, registry *commands.Registry, channel, username string) Model {
@@ -465,6 +469,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Handle Alt+R or Ctrl+G: enter reply select mode
+	altR := msg.Alt && len(msg.Runes) == 1 && (msg.Runes[0] == 'r' || msg.Runes[0] == 'R')
+	isCtrlG := msg.String() == "ctrl+g"
+	if altR || isCtrlG {
+		if m.replySelectMode {
+			return m, nil
+		}
+		m.replySelectMode = true
+		m.replySelectIdx = -1
+		// Default to most recent non-system message
+		for i := len(m.msgs) - 1; i >= 0; i-- {
+			if m.msgs[i].Username != "system" {
+				m.replySelectIdx = i
+				break
+			}
+		}
+		if m.replySelectIdx >= 0 {
+			m.ensureReplySelectVisible()
+		}
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "ctrl+c":
 		if m.client != nil {
@@ -479,6 +505,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "esc":
+		if m.replySelectMode {
+			m.replySelectMode = false
+			m.replySelectIdx = -1
+			return m, nil
+		}
 		if m.replyTo != nil {
 			m.replyTo = nil
 			return m, nil
@@ -522,13 +553,16 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "ctrl+]":
-		// Focus notifications panel.
 		m.notifVisible = true
+		m.notifFocused = !m.notifFocused
 		return m, nil
 
-	// Navigate notifications panel
 	case "up":
-		if m.notifVisible {
+		if m.replySelectMode {
+			m.moveReplySelectUp()
+			return m, nil
+		}
+		if m.notifFocused {
 			if m.notifIdx > 0 {
 				m.notifIdx--
 			}
@@ -541,7 +575,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadOlderIfNeeded()
 
 	case "down":
-		if m.notifVisible {
+		if m.replySelectMode {
+			m.moveReplySelectDown()
+			return m, nil
+		}
+		if m.notifFocused {
 			if m.notifIdx < len(m.notifications)-1 {
 				m.notifIdx++
 			}
@@ -573,8 +611,18 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "enter":
+		// Confirm reply selection
+		if m.replySelectMode {
+			if m.replySelectIdx >= 0 && m.replySelectIdx < len(m.msgs) && m.msgs[m.replySelectIdx].Username != "system" {
+				msg := m.msgs[m.replySelectIdx]
+				m.replyTo = &msg
+			}
+			m.replySelectMode = false
+			m.replySelectIdx = -1
+			return m, nil
+		}
 		// Jump to notification's channel
-		if m.notifVisible && len(m.notifications) > 0 && m.notifIdx < len(m.notifications) {
+		if m.notifFocused && len(m.notifications) > 0 && m.notifIdx < len(m.notifications) {
 			n := m.notifications[m.notifIdx]
 			if n.Channel != m.channel {
 				m.jumpToID = n.MsgID
@@ -603,7 +651,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					candidates = append(candidates, "/"+c.Name())
 				}
 			case "@":
-				allUsers := m.onlineUsers()
+				allUsers := m.allKnownUsers()
 				for _, u := range allUsers {
 					if strings.HasPrefix(strings.ToLower(u), strings.ToLower(word)) {
 						candidates = append(candidates, "@"+u)
@@ -617,7 +665,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			default:
 				if word != "" {
-					allUsers := m.onlineUsers()
+					allUsers := m.allKnownUsers()
 					for _, u := range allUsers {
 						if strings.HasPrefix(strings.ToLower(u), strings.ToLower(word)) {
 							candidates = append(candidates, "@"+u)
@@ -632,6 +680,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.input.ApplyNextCompletion()
 		}
+		return m, nil
+	}
+
+	if m.replySelectMode {
 		return m, nil
 	}
 
@@ -668,6 +720,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.sendWithEcho(val)
 	}
 
+	m.maybeAutoComplete()
+
 	return m, nil
 }
 
@@ -694,6 +748,94 @@ func (m Model) onlineUsers() []string {
 		return []string{}
 	}
 	return m.terminalOnline
+}
+
+func (m *Model) moveReplySelectUp() {
+	if len(m.msgs) == 0 {
+		return
+	}
+	// Move to previous non-system message
+	for i := m.replySelectIdx - 1; i >= 0; i-- {
+		if m.msgs[i].Username != "system" {
+			m.replySelectIdx = i
+			m.ensureReplySelectVisible()
+			return
+		}
+	}
+}
+
+func (m *Model) moveReplySelectDown() {
+	if len(m.msgs) == 0 {
+		return
+	}
+	// Move to next non-system message
+	for i := m.replySelectIdx + 1; i < len(m.msgs); i++ {
+		if m.msgs[i].Username != "system" {
+			m.replySelectIdx = i
+			m.ensureReplySelectVisible()
+			return
+		}
+	}
+}
+
+func (m *Model) ensureReplySelectVisible() {
+	if len(m.msgs) == 0 {
+		return
+	}
+	total := len(m.msgs)
+	fromBottom := total - 1 - m.replySelectIdx
+	if fromBottom < 0 {
+		fromBottom = 0
+	}
+	chatH := m.chatHeight()
+	if chatH < 1 {
+		chatH = 1
+	}
+	m.scrollOffset = clampInt(fromBottom-chatH/2, 0, total-1)
+}
+
+func (m *Model) maybeAutoComplete() {
+	word, prefix := m.input.WordAtCursor()
+	if prefix != "@" && prefix != "#" {
+		return
+	}
+	var candidates []string
+	switch prefix {
+	case "@":
+		allUsers := m.allKnownUsers()
+		for _, u := range allUsers {
+			if strings.HasPrefix(strings.ToLower(u), strings.ToLower(word)) {
+				candidates = append(candidates, "@"+u)
+			}
+		}
+	case "#":
+		for _, ch := range m.channels {
+			if strings.HasPrefix(strings.ToLower(ch), strings.ToLower(word)) {
+				candidates = append(candidates, "#"+ch)
+			}
+		}
+	}
+	if len(candidates) > 0 {
+		m.input.SetCompletions(candidates)
+	}
+}
+
+func (m Model) allKnownUsers() []string {
+	seen := make(map[string]struct{})
+	var users []string
+	for _, u := range m.onlineUsers() {
+		if _, ok := seen[u]; !ok {
+			seen[u] = struct{}{}
+			users = append(users, u)
+		}
+	}
+	for _, u := range m.users {
+		if _, ok := seen[u]; !ok {
+			seen[u] = struct{}{}
+			users = append(users, u)
+		}
+	}
+	return users
 }
 
 func fitToSize(content string, width, height int) string {
@@ -814,9 +956,12 @@ func (m Model) renderStatusBar() string {
 		notifBadge = mentionBadgeStyle().Render(fmt.Sprintf(" %d ", len(m.notifications))) + " "
 	}
 
-	right := " ctrl+r reply  ctrl+] mentions  ctrl+b ch  ctrl+l latest  ctrl+c quit "
+	right := " ↑↓/PgUp scroll  /file attach  /search  ctrl+r reply  ctrl+g select  ctrl+] mentions  ctrl+b ch  ctrl+l latest  ctrl+c quit "
+	if m.width < 130 {
+		right = " ↑↓ scroll  /file  ctrl+r reply  ctrl+g select  ctrl+] mentions  ctrl+b ch  ctrl+l latest  ctrl+c quit "
+	}
 	if m.width < 110 {
-		right = " ctrl+r reply  ctrl+] mentions  ctrl+b ch  ctrl+c quit "
+		right = " ctrl+r reply  ctrl+g select  ctrl+] mentions  ctrl+b ch  ctrl+c quit "
 	}
 	if m.width < 80 {
 		right = " ctrl+c quit "
@@ -984,7 +1129,23 @@ func (m Model) renderChatArea(width, height int) string {
 	// Reply bar above input
 	replyBar := ""
 	replyBarHeight := 0
-	if m.replyTo != nil {
+	if m.replySelectMode {
+		if m.replySelectIdx >= 0 && m.replySelectIdx < len(m.msgs) {
+			sm := m.msgs[m.replySelectIdx]
+			snippet := strings.ReplaceAll(sm.Content, "\n", " ")
+			if len([]rune(snippet)) > width-30 {
+				snippet = string([]rune(snippet)[:width-30]) + "…"
+			}
+			replyBar = fitToSize(replySelectPromptStyle().Width(width).MaxWidth(width).MaxHeight(1).Render(
+				fmt.Sprintf("↩ reply to @%s: %s  [↑↓ move  enter confirm  esc cancel]", sm.Username, snippet),
+			), width, 1)
+		} else {
+			replyBar = fitToSize(replySelectPromptStyle().Width(width).MaxWidth(width).MaxHeight(1).Render(
+				"↩ select a message to reply to  [↑↓ move  enter confirm  esc cancel]",
+			), width, 1)
+		}
+		replyBarHeight = 1
+	} else if m.replyTo != nil {
 		snippet := strings.ReplaceAll(m.replyTo.Content, "\n", " ")
 		if len([]rune(snippet)) > width-20 {
 			snippet = string([]rune(snippet)[:width-20]) + "…"
@@ -995,13 +1156,26 @@ func (m Model) renderChatArea(width, height int) string {
 		replyBarHeight = 1
 	}
 
+	// Mention autocomplete suggestions
+	mentionSuggestions := ""
+	mentionsHeight := 0
+	if !m.replySelectMode {
+		_, prefix := m.input.WordAtCursor()
+		if (prefix == "@" || prefix == "#") && len(m.input.completions) > 0 {
+			mentionSuggestions = m.renderMentionSuggestions(width)
+			if mentionSuggestions != "" {
+				mentionsHeight = lipgloss.Height(mentionSuggestions)
+			}
+		}
+	}
+
 	inputLines := m.input.LineCount()
 	inputHeight := inputLines + 2
 	if inputHeight > 8 {
 		inputHeight = 8
 	}
 
-	chatBoxHeight := height - inputHeight - typingHeight - suggestionsHeight - replyBarHeight - 1
+	chatBoxHeight := height - inputHeight - typingHeight - suggestionsHeight - replyBarHeight - mentionsHeight - 1
 	if chatBoxHeight < 1 {
 		chatBoxHeight = 1
 	}
@@ -1012,13 +1186,15 @@ func (m Model) renderChatArea(width, height int) string {
 	chatW := panelContentWidth(width)
 
 	vp := ViewportModel{
-		width:      chatW,
-		height:     chatH,
-		offset:     m.scrollOffset,
-		messages:   m.msgs,
-		loading:    m.loadingHistory,
-		allLoaded:  m.allHistoryLoaded,
-		myUsername: m.username,
+		width:       chatW,
+		height:      chatH,
+		offset:      m.scrollOffset,
+		messages:    m.msgs,
+		loading:     m.loadingHistory,
+		allLoaded:   m.allHistoryLoaded,
+		myUsername:  m.username,
+		selectMode:  m.replySelectMode,
+		selectedIdx: m.replySelectIdx,
 	}
 	chatContent := vp.View()
 
@@ -1035,6 +1211,9 @@ func (m Model) renderChatArea(width, height int) string {
 	}
 	if replyBar != "" {
 		parts = append(parts, replyBar)
+	}
+	if mentionSuggestions != "" {
+		parts = append(parts, mentionSuggestions)
 	}
 	parts = append(parts, inputBox)
 
@@ -1073,6 +1252,28 @@ func (m Model) renderCommandSuggestions(width int) string {
 	}
 	content := strings.Join(lines, "\n")
 	return renderBorderedBox(commandSuggestionStyle(), width, lipgloss.Height(content)+2, content)
+}
+
+func (m Model) renderMentionSuggestions(width int) string {
+	completions := m.input.completions
+	if len(completions) == 0 {
+		return ""
+	}
+	_, compIdx := m.input.CurrentCompletion()
+	displayW := width - 4
+	if displayW < 20 {
+		displayW = 20
+	}
+	var items []string
+	for i, c := range completions {
+		highlighted := i == compIdx
+		items = append(items, autoCompleteItemStyle(highlighted).Render(c))
+	}
+	line := strings.Join(items, " ")
+	if lipgloss.Width(line) > displayW {
+		line = line[:displayW] + "…"
+	}
+	return autoCompleteStyle().Width(width).MaxWidth(width).Render(line)
 }
 
 func (m Model) renderTypingIndicator() string {

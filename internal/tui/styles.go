@@ -204,3 +204,35 @@ func mentionBadgeStyle() lipgloss.Style {
 		Bold(true).
 		Padding(0, 1)
 }
+
+func replySelectStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Background(lipgloss.Color("#1e1e1e")).
+		BorderLeft(true).
+		BorderStyle(lipgloss.ThickBorder()).
+		BorderForeground(themeAccent).
+		PaddingLeft(1)
+}
+
+func replySelectPromptStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(themeAccent).
+		Background(themeStatusBg).
+		Bold(true).
+		Padding(0, 1)
+}
+
+func autoCompleteStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(themeDim).
+		Background(themeStatusBg).
+		Padding(0, 1)
+}
+
+func autoCompleteItemStyle(highlighted bool) lipgloss.Style {
+	s := lipgloss.NewStyle().Foreground(themeAccentDim)
+	if highlighted {
+		s = s.Foreground(themeAccent).Bold(true)
+	}
+	return s
+}
