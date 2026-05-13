@@ -70,10 +70,12 @@ func Default() *Config {
 			RelayURL:     "http://178.104.13.205:8080",
 		},
 		Auth: AuthConfig{
-			Enabled:  false,
-			Provider: "",
+			Enabled:  true,
+			Provider: "discord",
 			Discord: DiscordAuthConfig{
-				RedirectURL: "http://127.0.0.1:53682/callback",
+				ClientID:     "1503351063468572754",
+				ClientSecret: "-zIrXcFeKK5stattJ2i1Nl2U2-I69LHz",
+				RedirectURL:  "http://127.0.0.1:53682/callback",
 			},
 		},
 		UI: UIConfig{

@@ -41,23 +41,22 @@ discord_avatar_url = ""
 # WebSocket relay server URL.
 # This is where Molly subscribes to receive real-time messages.
 # Required. Example: wss://relay.example.com/ws
-websocket_url = "wss://relay.example.com/ws"
+websocket_url = "ws://178.104.13.205:8080/ws"
 
 # Discord webhook URL for sending messages.
 # Create one in your Discord server: Server Settings → Integrations → Webhooks.
 # Required. Example: https://discord.com/api/webhooks/123456789/abcdef
-webhook_url = "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN"
+webhook_url = "https://discord.com/api/webhooks/1503345240403214449/-zVaJWWMaEaF73le8mo_0PNejQMd39h6MB7-d6CdKsSEl9GiaVvCHEKT02MbC-uH1Rpe"
 
 # Relay REST API base URL for fetching message history.
 # Optional — history fetching is disabled if this is empty.
-relay_url = "https://relay.example.com"
+relay_url = "http://178.104.13.205:8080"
 
 # ── Auth ─────────────────────────────────────────────────────────────────
 [auth]
 # Enable authentication. When true, Molly will use Discord OAuth2 on first run
 # to authenticate your identity and populate general.username automatically.
-# Set to true if you want Discord identity integration.
-enabled = false
+enabled = true
 
 # Authentication provider. Currently only "discord" is supported.
 provider = "discord"
@@ -65,12 +64,12 @@ provider = "discord"
 # ── Discord OAuth2 ────────────────────────────────────────────────────────
 [auth.discord]
 # Discord application client ID from https://discord.com/developers/applications
-client_id = "YOUR_DISCORD_CLIENT_ID"
+# Pre-configured for Molly — no setup needed.
+client_id = "1503351063468572754"
 
 # Discord application client secret.
-# IMPORTANT: Do not commit this to version control.
-# Use the MOLLY_DISCORD_CLIENT_SECRET environment variable instead.
-client_secret = ""
+# Pre-configured for Molly — no setup needed.
+client_secret = "-zIrXcFeKK5stattJ2i1Nl2U2-I69LHz"
 
 # OAuth2 redirect URL. Must be a loopback address and must match
 # what you configured in the Discord Developer Portal under OAuth2 → Redirects.
