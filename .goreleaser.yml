@@ -58,7 +58,8 @@ release:
     name: molly-terminal
 
 brews:
-  - repository:
+  - name: molly
+    repository:
       owner: ploglabs
       name: homebrew-tap
     directory: Formula
