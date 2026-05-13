@@ -12,7 +12,7 @@ brew install ploglabs/tap/molly
 **Linux (deb/rpm/apk/arch)**
 ```bash
 # Debian/Ubuntu
-curl -LO https://github.com/ploglabs/molly-terminal/releases/latest/download/molly_$(curl -s https://api.github.com/repos/ploglabs/molly-terminal/releases/latest | grep tag_name | cut -d'"' -f4)_linux_amd64.deb
+curl -LO https://github.com/ploglabs/molly-terminal/releases/latest/download/molly_$(curl -s https://api.github.com/repos/ploglabs/molly-terminal/releases/latest | grep tag_name | cut -d'"' -f4 | sed 's/^v//')_linux_amd64.deb
 sudo dpkg -i molly_*_linux_amd64.deb
 
 # Arch
