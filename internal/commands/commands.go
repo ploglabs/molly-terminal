@@ -38,6 +38,10 @@ type SendFileMsg struct {
 	Content string
 }
 
+type OpenImageMsg struct {
+	Index int
+}
+
 func SystemMsg(content string) model.Message {
 	return model.Message{
 		ID:        "system-" + time.Now().Format("20060102150405.999999999"),

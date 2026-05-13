@@ -65,6 +65,7 @@ func main() {
 	registry.Register(commands.NewLeaveCmd(store))
 	registry.Register(commands.NewStatusCmd())
 	registry.Register(commands.NewFileCmd())
+	registry.Register(commands.NewOpenCmd())
 	registry.Register(commands.NewSnippetCmd())
 	registry.Register(commands.NewLogoutCmd(cfg, configPath))
 

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -442,6 +444,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case commands.SendFileMsg:
 		return m.sendFileWithEcho(msg.Path, msg.Content)
 
+	case commands.OpenImageMsg:
+		return m.openImage(msg.Index)
+
 	case commands.LogoutMsg:
 		sysMsg := commands.SystemMsg("logged out — restart molly to re-authenticate")
 		m.msgs = append(m.msgs, sysMsg)
@@ -674,6 +679,29 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			for _, ch := range m.channels {
 				if strings.HasPrefix(strings.ToLower(ch), strings.ToLower(needle)) {
 					candidates = append(candidates, "#"+ch)
+				}
+			}
+		} else if m.isOpenInput() {
+			// Autocomplete image indices for /open
+			inputStr := strings.TrimSpace(string(m.input.text))
+			parts := strings.Fields(inputStr)
+			needle := ""
+			if len(parts) > 1 {
+				needle = parts[1]
+			}
+			var images []model.Attachment
+			for i := len(m.msgs) - 1; i >= 0; i-- {
+				for _, att := range m.msgs[i].Attachments {
+					if isImageAttachment(att) {
+						images = append(images, att)
+					}
+				}
+			}
+			for idx, img := range images {
+				n := idx + 1
+				candidate := fmt.Sprintf("%d", n)
+				if needle == "" || strings.HasPrefix(candidate, needle) {
+					candidates = append(candidates, fmt.Sprintf("%d (%s)", n, img.Filename))
 				}
 			}
 		} else {
@@ -1541,6 +1569,56 @@ func (m Model) sendFileWithEcho(path, content string) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+func (m Model) openImage(index int) (tea.Model, tea.Cmd) {
+	var images []model.Attachment
+	for i := len(m.msgs) - 1; i >= 0; i-- {
+		for _, att := range m.msgs[i].Attachments {
+			if isImageAttachment(att) {
+				images = append(images, att)
+			}
+		}
+	}
+	if len(images) == 0 {
+		sysMsg := commands.SystemMsg("no images found in this channel")
+		m.msgs = append(m.msgs, sysMsg)
+		m.scrollOffset = 0
+		return m, nil
+	}
+	if index > len(images) {
+		sysMsg := commands.SystemMsg(fmt.Sprintf("only %d image(s) available", len(images)))
+		m.msgs = append(m.msgs, sysMsg)
+		m.scrollOffset = 0
+		return m, nil
+	}
+	img := images[index-1]
+	url := img.ProxyURL
+	if url == "" {
+		url = img.URL
+	}
+	if url == "" {
+		sysMsg := commands.SystemMsg("image has no URL")
+		m.msgs = append(m.msgs, sysMsg)
+		m.scrollOffset = 0
+		return m, nil
+	}
+	go func() {
+		var cmd *exec.Cmd
+		switch runtime.GOOS {
+		case "darwin":
+			cmd = exec.Command("open", url)
+		case "windows":
+			cmd = exec.Command("cmd", "/c", "start", url)
+		default:
+			cmd = exec.Command("xdg-open", url)
+		}
+		_ = cmd.Run()
+	}()
+	sysMsg := commands.SystemMsg(fmt.Sprintf("opening %s", img.Filename))
+	m.msgs = append(m.msgs, sysMsg)
+	m.scrollOffset = 0
+	return m, nil
+}
+
 func (m Model) SendMessage(content, channel, replyToID string) tea.Cmd {
 	if m.sender == nil {
 		return nil
@@ -1642,6 +1720,11 @@ func (m Model) validateJoin(args []string) error {
 func (m Model) isJoinInput() bool {
 	isJoin, _ := splitJoinInput(m.input.Value())
 	return isJoin
+}
+
+func (m Model) isOpenInput() bool {
+	val := strings.TrimSpace(m.input.Value())
+	return strings.HasPrefix(val, "/open")
 }
 
 func (m Model) commandCandidates(prefix string) []commands.Command {
