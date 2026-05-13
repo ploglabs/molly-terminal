@@ -126,21 +126,4 @@ aurs:
       name: ploglabs
       email: hello@ploglabs.dev
 
-snapcrafts:
-  - name: molly
-    summary: "Terminal-native realtime chat client for Discord"
-    description: >
-      Molly is a terminal-native realtime chat client built in Go.
-      It connects to a relay server over WebSockets, sends messages
-      via Discord webhooks, and stores everything locally in SQLite.
-    grade: stable
-    confinement: strict
-    license: MIT
-    apps:
-      molly:
-        plugs:
-          - network
-          - home
-    plugs:
-      network:
-      home:
+
