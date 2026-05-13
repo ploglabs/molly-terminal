@@ -56,7 +56,8 @@ relay_url = "https://relay.example.com"
 [auth]
 # Enable authentication. When true, Molly will use Discord OAuth2 on first run
 # to authenticate your identity and populate general.username automatically.
-enabled = true
+# Set to true if you want Discord identity integration.
+enabled = false
 
 # Authentication provider. Currently only "discord" is supported.
 provider = "discord"
