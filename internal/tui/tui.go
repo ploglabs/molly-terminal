@@ -32,8 +32,6 @@ type typingEventMsg model.TypingEvent
 
 type typingTickMsg struct{}
 
-type imageRefreshMsg struct{}
-
 type presenceMsg model.UserPresence
 
 type terminalUsersMsg []string
@@ -151,7 +149,6 @@ func (m Model) Init() tea.Cmd {
 		m.loadLocalHistory(m.channel, 100),
 		history.InitialFetch(m.fetcher, m.channel, 100),
 		m.input.CursorBlinkCmd(),
-		imageRefreshTickCmd(),
 	)
 }
 
@@ -183,21 +180,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			notifCmd = m.persistNotification(n)
 		}
 
-		// Prefetch image attachments
-		hasImages := false
-		for _, att := range msg.Attachments {
-			if isImageAttachment(att) {
-				FetchImage(att.URL)
-				FetchImage(att.ProxyURL)
-				hasImages = true
-			}
-		}
-
 		if msg.Channel != m.channel {
 			batch := []tea.Cmd{m.listenMessages(), m.persistMessage(model.Message(msg))}
-			if hasImages {
-				batch = append(batch, imageRefreshTickCmd())
-			}
 			if notifCmd != nil {
 				batch = append(batch, notifCmd)
 			}
@@ -219,9 +203,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scrollOffset = 0
 		}
 		batch := []tea.Cmd{m.listenMessages(), m.persistMessage(model.Message(msg))}
-		if hasImages {
-			batch = append(batch, imageRefreshTickCmd())
-		}
 		if notifCmd != nil {
 			batch = append(batch, notifCmd)
 		}
@@ -260,16 +241,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.typingUsers) > 0 {
 			cmds = append(cmds, typingTickCmd())
 		}
-		if shouldReRender() {
-			cmds = append(cmds, imageRefreshTickCmd())
-		}
 		return m, tea.Batch(cmds...)
-
-	case imageRefreshMsg:
-		if shouldReRender() {
-			return m, imageRefreshTickCmd()
-		}
-		return m, nil
 
 	case terminalUsersMsg:
 		m.terminalOnline = []string(msg)
@@ -315,19 +287,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.jumpToID != "" && m.jumpToMessage(m.jumpToID) {
 			m.jumpToID = ""
 		}
-		hasImages := false
 		for _, msg := range msg.Messages {
 			cmds = append(cmds, m.persistMessage(msg))
-			for _, att := range msg.Attachments {
-				if isImageAttachment(att) {
-					FetchImage(att.URL)
-					FetchImage(att.ProxyURL)
-					hasImages = true
-				}
-			}
-		}
-		if hasImages {
-			cmds = append(cmds, imageRefreshTickCmd())
 		}
 		m.users = msgsToUsers(m.msgs)
 		return m, tea.Batch(cmds...)
@@ -349,19 +310,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.historyLoaded = true
 			if m.jumpToID != "" && m.jumpToMessage(m.jumpToID) {
 				m.jumpToID = ""
-			}
-			hasImages := false
-			for _, lm := range msg.Messages {
-				for _, att := range lm.Attachments {
-					if isImageAttachment(att) {
-						FetchImage(att.URL)
-						FetchImage(att.ProxyURL)
-						hasImages = true
-					}
-				}
-			}
-			if hasImages {
-				return m, imageRefreshTickCmd()
 			}
 		}
 		return m, nil
@@ -1401,12 +1349,6 @@ func typingTickCmd() tea.Cmd {
 	})
 }
 
-func imageRefreshTickCmd() tea.Cmd {
-	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
-		return imageRefreshMsg{}
-	})
-}
-
 func (m Model) listenMessages() tea.Cmd {
 	if m.client == nil {
 		return nil
@@ -1587,7 +1529,6 @@ func (m Model) sendFileWithEcho(path, content string) (tea.Model, tea.Cmd) {
 				ContentType: contentType,
 				Size:        int(info.Size()),
 			}}
-			FetchImage(path)
 		}
 	}
 
@@ -1597,9 +1538,6 @@ func (m Model) sendFileWithEcho(path, content string) (tea.Model, tea.Cmd) {
 	m.unreadCount = 0
 
 	cmds := []tea.Cmd{m.SendFile(path, m.channel, content), m.persistMessage(echo)}
-	if path != "" && len(echo.Attachments) > 0 && isImageAttachment(echo.Attachments[0]) {
-		cmds = append(cmds, imageRefreshTickCmd())
-	}
 	return m, tea.Batch(cmds...)
 }
 

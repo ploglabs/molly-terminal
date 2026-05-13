@@ -266,8 +266,6 @@ func resolvedContentType(att model.Attachment) string {
 }
 
 func RenderAttachment(att model.Attachment) string {
-	detectOnce.Do(detectImageProtocol)
-
 	if len(att.Filename) == 0 {
 		return ""
 	}
@@ -277,16 +275,7 @@ func RenderAttachment(att model.Attachment) string {
 		return nonImageAttachment(att)
 	}
 
-	switch protocol {
-	case ProtocolITerm2:
-		return renderITerm2Image(att)
-	case ProtocolKitty:
-		return renderKittyImage(att)
-	case ProtocolSixel:
-		return renderSixelImage(att)
-	default:
-		return nonImageAttachment(att)
-	}
+	return imageAttachmentPlaceholder(att)
 }
 
 func nonImageAttachment(att model.Attachment) string {
@@ -583,7 +572,21 @@ func imagePlaceholder(att model.Attachment, status string) string {
 	return lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#91a7ff")).
 		PaddingLeft(3).
-		Render(fmt.Sprintf("🖼 %s [%s%s%s]", att.Filename, status, size, dims))
+		Render(fmt.Sprintf("[img] %s [%s%s%s]", att.Filename, status, size, dims))
+}
+
+func imageAttachmentPlaceholder(att model.Attachment) string {
+	parts := []string{att.Filename}
+	if att.Size > 0 {
+		parts = append(parts, formatBytes(att.Size))
+	}
+	if att.Width > 0 && att.Height > 0 {
+		parts = append(parts, fmt.Sprintf("%dx%d", att.Width, att.Height))
+	}
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#91a7ff")).
+		PaddingLeft(3).
+		Render(strings.Join(parts, " "))
 }
 
 func formatBytes(b int) string {
