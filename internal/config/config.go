@@ -167,7 +167,7 @@ func (c *Config) Save(path string) error {
 	}
 	defer f.Close()
 
-	if err := toml.NewEncoder(f).Encode(&safe); err != nil {
+	if err := toml.NewEncoder(f).Encode(c); err != nil {
 		return fmt.Errorf("encoding config: %w", err)
 	}
 
