@@ -494,6 +494,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case commands.SendFileMsg:
 		return m.sendFileWithEcho(msg.Path, msg.Content)
 
+	case commands.LogoutMsg:
+		sysMsg := commands.SystemMsg("logged out — restart molly to re-authenticate")
+		m.msgs = append(m.msgs, sysMsg)
+		m.scrollOffset = 0
+		if m.client != nil {
+			_ = m.client.Close()
+		}
+		return m, tea.Quit
+
 	case commands.SetStatusMsg:
 		m.myStatus = msg.Status
 		now := time.Now()
