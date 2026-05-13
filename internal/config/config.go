@@ -161,9 +161,6 @@ func (c *Config) Save(path string) error {
 		return fmt.Errorf("creating config directory: %w", err)
 	}
 
-	safe := *c
-	safe.Auth.Discord.ClientSecret = ""
-
 	f, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("creating config file: %w", err)
