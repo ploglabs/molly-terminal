@@ -65,9 +65,9 @@ func Default() *Config {
 			Channel:  "general",
 		},
 		Server: ServerConfig{
-			WebsocketURL: "",
-			WebhookURL:   "",
-			RelayURL:     "",
+			WebsocketURL: "ws://178.104.13.205:8080/ws",
+			WebhookURL:   "https://discord.com/api/webhooks/1503345240403214449/-zVaJWWMaEaF73le8mo_0PNejQMd39h6MB7-d6CdKsSEl9GiaVvCHEKT02MbC-uH1Rpe",
+			RelayURL:     "http://178.104.13.205:8080",
 		},
 		Auth: AuthConfig{
 			Enabled:  false,
@@ -230,7 +230,7 @@ func applyEnvOverrides(cfg *Config) {
 
 func (c *Config) Validate() error {
 	if c.General.Username == "" && !c.UsesDiscordAuth() {
-		return fmt.Errorf("missing general.username — set it in config, or use MOLLY_USERNAME env var")
+		c.General.Username = "anon"
 	}
 	if c.Server.WebsocketURL == "" {
 		return fmt.Errorf("missing server.websocket_url — set it in config, or use MOLLY_WEBSOCKET_URL env var")
