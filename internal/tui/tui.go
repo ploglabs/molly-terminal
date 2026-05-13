@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -29,6 +31,8 @@ type wsStatusMsg struct {
 type typingEventMsg model.TypingEvent
 
 type typingTickMsg struct{}
+
+type imageRefreshMsg struct{}
 
 type presenceMsg model.UserPresence
 
@@ -98,11 +102,15 @@ type Model struct {
 
 func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, registry *commands.Registry, channel, username string) Model {
 	channels := []string{channel}
+	var notifications []model.Notification
 	if store != nil {
 		if storedChannels, err := store.GetChannels(); err == nil {
 			channels = mergeChannels(channels, storedChannels)
 		}
 		_ = store.InsertChannel(channel)
+		if storedNotifs, err := store.GetNotifications(); err == nil {
+			notifications = storedNotifs
+		}
 	}
 
 	return Model{
@@ -124,6 +132,7 @@ func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetch
 		channelsVisible:  true,
 		usersVisible:     true,
 		notifVisible:     true,
+		notifications:    notifications,
 		typingUsers:      make(map[string]time.Time),
 		sentHashes:       make(map[string]time.Time),
 		presences:        make(map[string]model.UserPresence),
@@ -142,6 +151,7 @@ func (m Model) Init() tea.Cmd {
 		m.loadLocalHistory(m.channel, 100),
 		history.InitialFetch(m.fetcher, m.channel, 100),
 		m.input.CursorBlinkCmd(),
+		imageRefreshTickCmd(),
 	)
 }
 
@@ -159,19 +169,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.addChannel(msg.Channel)
 
 		// Check for @mention
+		var notifCmd tea.Cmd
 		if msg.Username != m.username && strings.Contains(
 			strings.ToLower(msg.Content), "@"+strings.ToLower(m.username)) {
-			m.notifications = append(m.notifications, model.Notification{
+			n := model.Notification{
 				Channel:   msg.Channel,
 				Username:  msg.Username,
 				Content:   msg.Content,
 				Timestamp: msg.Timestamp,
 				MsgID:     msg.ID,
-			})
+			}
+			m.notifications = append(m.notifications, n)
+			notifCmd = m.persistNotification(n)
+		}
+
+		// Prefetch image attachments
+		hasImages := false
+		for _, att := range msg.Attachments {
+			if isImageAttachment(att) {
+				FetchImage(att.URL)
+				FetchImage(att.ProxyURL)
+				hasImages = true
+			}
 		}
 
 		if msg.Channel != m.channel {
-			return m, tea.Batch(m.listenMessages(), m.persistMessage(model.Message(msg)))
+			batch := []tea.Cmd{m.listenMessages(), m.persistMessage(model.Message(msg))}
+			if hasImages {
+				batch = append(batch, imageRefreshTickCmd())
+			}
+			if notifCmd != nil {
+				batch = append(batch, notifCmd)
+			}
+			return m, tea.Batch(batch...)
 		}
 		key := contentHash(msg.Username, msg.Channel, msg.Content)
 		if _, exists := m.sentHashes[key]; exists {
@@ -188,7 +218,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.scrollOffset = 0
 		}
-		return m, tea.Batch(m.listenMessages(), m.persistMessage(model.Message(msg)))
+		batch := []tea.Cmd{m.listenMessages(), m.persistMessage(model.Message(msg))}
+		if hasImages {
+			batch = append(batch, imageRefreshTickCmd())
+		}
+		if notifCmd != nil {
+			batch = append(batch, notifCmd)
+		}
+		return m, tea.Batch(batch...)
 
 	case wsStatusMsg:
 		m.status = msg.Status
@@ -219,8 +256,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				delete(m.sentHashes, h)
 			}
 		}
+		var cmds []tea.Cmd
 		if len(m.typingUsers) > 0 {
-			return m, typingTickCmd()
+			cmds = append(cmds, typingTickCmd())
+		}
+		if shouldReRender() {
+			cmds = append(cmds, imageRefreshTickCmd())
+		}
+		return m, tea.Batch(cmds...)
+
+	case imageRefreshMsg:
+		if shouldReRender() {
+			return m, imageRefreshTickCmd()
 		}
 		return m, nil
 
@@ -268,8 +315,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.jumpToID != "" && m.jumpToMessage(m.jumpToID) {
 			m.jumpToID = ""
 		}
+		hasImages := false
 		for _, msg := range msg.Messages {
 			cmds = append(cmds, m.persistMessage(msg))
+			for _, att := range msg.Attachments {
+				if isImageAttachment(att) {
+					FetchImage(att.URL)
+					FetchImage(att.ProxyURL)
+					hasImages = true
+				}
+			}
+		}
+		if hasImages {
+			cmds = append(cmds, imageRefreshTickCmd())
 		}
 		m.users = msgsToUsers(m.msgs)
 		return m, tea.Batch(cmds...)
@@ -291,6 +349,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.historyLoaded = true
 			if m.jumpToID != "" && m.jumpToMessage(m.jumpToID) {
 				m.jumpToID = ""
+			}
+			hasImages := false
+			for _, lm := range msg.Messages {
+				for _, att := range lm.Attachments {
+					if isImageAttachment(att) {
+						FetchImage(att.URL)
+						FetchImage(att.ProxyURL)
+						hasImages = true
+					}
+				}
+			}
+			if hasImages {
+				return m, imageRefreshTickCmd()
 			}
 		}
 		return m, nil
@@ -554,7 +625,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+]":
 		m.notifVisible = true
-		m.notifFocused = !m.notifFocused
+		if !m.notifFocused {
+			m.notifFocused = true
+		} else if len(m.notifications) > 0 {
+			m.notifIdx = (m.notifIdx + 1) % len(m.notifications)
+		}
 		return m, nil
 
 	case "up":
@@ -951,20 +1026,34 @@ func (m Model) renderStatusBar() string {
 	onlineCount := len(m.onlineUsers())
 	left := fmt.Sprintf(" %s  #%s  %d online", connStr, m.channel, onlineCount)
 
-	notifBadge := ""
-	if len(m.notifications) > 0 {
-		notifBadge = mentionBadgeStyle().Render(fmt.Sprintf(" %d ", len(m.notifications))) + " "
-	}
-
-	right := " ↑↓/PgUp scroll  /file attach  /search  ctrl+r reply  ctrl+g select  ctrl+] mentions  ctrl+b ch  ctrl+l latest  ctrl+c quit "
-	if m.width < 130 {
-		right = " ↑↓ scroll  /file  ctrl+r reply  ctrl+g select  ctrl+] mentions  ctrl+b ch  ctrl+l latest  ctrl+c quit "
-	}
-	if m.width < 110 {
-		right = " ctrl+r reply  ctrl+g select  ctrl+] mentions  ctrl+b ch  ctrl+c quit "
-	}
-	if m.width < 80 {
-		right = " ctrl+c quit "
+	var right string
+	if m.width >= 130 {
+		right = shortcutScrollStyle().Render(" ↑↓/PgUp scroll") + "  " +
+			shortcutFileStyle().Render("/file attach") + "  " +
+			shortcutSearchStyle().Render("/search") + "  " +
+			shortcutReplyStyle().Render("ctrl+r reply") + "  " +
+			shortcutSelectStyle().Render("ctrl+g select") + "  " +
+			shortcutMentionStyle().Render("ctrl+] mentions") + "  " +
+			shortcutChStyle().Render("ctrl+b ch") + "  " +
+			shortcutLatestStyle().Render("ctrl+l latest") + "  " +
+			shortcutQuitStyle().Render("ctrl+c quit") + " "
+	} else if m.width >= 110 {
+		right = shortcutScrollStyle().Render(" ↑↓ scroll") + "  " +
+			shortcutFileStyle().Render("/file") + "  " +
+			shortcutReplyStyle().Render("ctrl+r reply") + "  " +
+			shortcutSelectStyle().Render("ctrl+g select") + "  " +
+			shortcutMentionStyle().Render("ctrl+] mentions") + "  " +
+			shortcutChStyle().Render("ctrl+b ch") + "  " +
+			shortcutLatestStyle().Render("ctrl+l latest") + "  " +
+			shortcutQuitStyle().Render("ctrl+c quit") + " "
+	} else if m.width >= 80 {
+		right = shortcutReplyStyle().Render("ctrl+r reply") + "  " +
+			shortcutSelectStyle().Render("ctrl+g select") + "  " +
+			shortcutMentionStyle().Render("ctrl+] mentions") + "  " +
+			shortcutChStyle().Render("ctrl+b ch") + "  " +
+			shortcutQuitStyle().Render("ctrl+c quit") + " "
+	} else {
+		right = shortcutQuitStyle().Render("ctrl+c quit") + " "
 	}
 
 	if !m.lastSendOk && m.sendErr != "" {
@@ -977,14 +1066,14 @@ func (m Model) renderStatusBar() string {
 	}
 
 	leftStr := left + unreadPart
-	leftW := lipgloss.Width(leftStr) + lipgloss.Width(notifBadge)
+	leftW := lipgloss.Width(leftStr)
 	rightW := lipgloss.Width(right)
 	gap := m.width - 2 - leftW - rightW
 	if gap < 0 {
 		gap = 0
 	}
 
-	bar := leftStr + notifBadge + strings.Repeat(" ", gap) + right
+	bar := leftStr + strings.Repeat(" ", gap) + right
 	return statusBarStyle().Width(m.width).MaxWidth(m.width).MaxHeight(1).Render(bar)
 }
 
@@ -1303,6 +1392,12 @@ func typingTickCmd() tea.Cmd {
 	})
 }
 
+func imageRefreshTickCmd() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
+		return imageRefreshMsg{}
+	})
+}
+
 func (m Model) listenMessages() tea.Cmd {
 	if m.client == nil {
 		return nil
@@ -1469,12 +1564,34 @@ func (m Model) sendFileWithEcho(path, content string) (tea.Model, tea.Cmd) {
 		Channel:   m.channel,
 		Timestamp: time.Now(),
 	}
+
+	// Add local attachment for inline rendering
+	if path != "" {
+		info, err := os.Stat(path)
+		if err == nil && !info.IsDir() {
+			base := filepath.Base(path)
+			ext := strings.ToLower(filepath.Ext(path))
+			contentType := MimeTypeFromExt(ext)
+			echo.Attachments = []model.Attachment{{
+				URL:         path,
+				Filename:    base,
+				ContentType: contentType,
+				Size:        int(info.Size()),
+			}}
+			FetchImage(path)
+		}
+	}
+
 	m.msgs = insertSorted(m.msgs, echo)
 	m.users = msgsToUsers(m.msgs)
 	m.scrollOffset = 0
 	m.unreadCount = 0
 
-	return m, tea.Batch(m.SendFile(path, m.channel, content), m.persistMessage(echo))
+	cmds := []tea.Cmd{m.SendFile(path, m.channel, content), m.persistMessage(echo)}
+	if path != "" && len(echo.Attachments) > 0 && isImageAttachment(echo.Attachments[0]) {
+		cmds = append(cmds, imageRefreshTickCmd())
+	}
+	return m, tea.Batch(cmds...)
 }
 
 func (m Model) SendMessage(content, channel, replyToID string) tea.Cmd {
@@ -1497,6 +1614,16 @@ func (m Model) persistMessage(msg model.Message) tea.Cmd {
 	}
 	return func() tea.Msg {
 		err := m.store.InsertMessage(msg)
+		return dbWriteResultMsg{Err: err}
+	}
+}
+
+func (m Model) persistNotification(n model.Notification) tea.Cmd {
+	if m.store == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		err := m.store.InsertNotification(n)
 		return dbWriteResultMsg{Err: err}
 	}
 }

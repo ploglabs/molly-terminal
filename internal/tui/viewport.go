@@ -156,6 +156,13 @@ func (v *ViewportModel) View() string {
 			raw := fmt.Sprintf("%s <%s> %s", ts, username, content)
 			wrapped := wrapText(raw, v.width)
 			msgLines = append(msgLines, msgStyle.Width(v.width).Render(wrapped))
+
+			// Render attachments below message content
+			for _, att := range m.Attachments {
+				if att.Filename != "" {
+					msgLines = append(msgLines, RenderAttachment(att))
+				}
+			}
 		}
 
 		block := strings.Join(msgLines, "\n")
@@ -196,6 +203,7 @@ func messageLineCount(m model.Message, width int, myUsername string) int {
 	raw := fmt.Sprintf("%s <%s> %s", ts, m.Username, content)
 	wrapped := wrapText(raw, width)
 	count += len(strings.Split(wrapped, "\n"))
+	count += len(m.Attachments)
 	return count
 }
 

@@ -245,21 +245,32 @@ func (c *Client) dial() error {
 	return nil
 }
 
+type relayAttachment struct {
+	URL         string `json:"url"`
+	ProxyURL    string `json:"proxy_url"`
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
+	Size        int    `json:"size"`
+}
+
 type relayEvent struct {
-	Type           string `json:"type"`
-	Channel        string `json:"channel"`
-	ChannelID      string `json:"channel_id"`
-	Username       string `json:"username"`
-	UserID         string `json:"user_id"`
-	Content        string `json:"content"`
-	MessageID      string `json:"message_id"`
-	Timestamp      string `json:"timestamp"`
-	Status         string `json:"status"`
-	UpdatedAt      string `json:"updated_at"`
-	ReplyToID      string `json:"reply_to_id"`
-	ReplyToContent string `json:"reply_to_content"`
-	ReplyToAuthor  string `json:"reply_to_author"`
-	Users          []string `json:"users"`
+	Type           string            `json:"type"`
+	Channel        string            `json:"channel"`
+	ChannelID      string            `json:"channel_id"`
+	Username       string            `json:"username"`
+	UserID         string            `json:"user_id"`
+	Content        string            `json:"content"`
+	MessageID      string            `json:"message_id"`
+	Timestamp      string            `json:"timestamp"`
+	Status         string            `json:"status"`
+	UpdatedAt      string            `json:"updated_at"`
+	ReplyToID      string            `json:"reply_to_id"`
+	ReplyToContent string            `json:"reply_to_content"`
+	ReplyToAuthor  string            `json:"reply_to_author"`
+	Users          []string          `json:"users"`
+	Attachments    []relayAttachment `json:"attachments"`
 }
 
 func (c *Client) readLoop() {
@@ -328,6 +339,7 @@ func (c *Client) readLoop() {
 				ReplyToID:      evt.ReplyToID,
 				ReplyToContent: evt.ReplyToContent,
 				ReplyToAuthor:  evt.ReplyToAuthor,
+				Attachments:    convertAttachments(evt.Attachments),
 			}
 			select {
 			case c.msgCh <- msg:
@@ -384,4 +396,20 @@ func scaleBackoff(current time.Duration) time.Duration {
 		return maxBackoff
 	}
 	return next
+}
+
+func convertAttachments(ras []relayAttachment) []model.Attachment {
+	result := make([]model.Attachment, 0, len(ras))
+	for _, ra := range ras {
+		result = append(result, model.Attachment{
+			URL:         ra.URL,
+			ProxyURL:    ra.ProxyURL,
+			Filename:    ra.Filename,
+			ContentType: ra.ContentType,
+			Width:       ra.Width,
+			Height:      ra.Height,
+			Size:        ra.Size,
+		})
+	}
+	return result
 }

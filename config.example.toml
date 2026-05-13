@@ -91,3 +91,9 @@ theme = "default"
 
 # Number of messages to fetch on startup from the relay server.
 history_limit = 100
+
+# Inline image rendering protocol. Options: auto (default), iterm2, kitty, none.
+# "auto" probes the environment. Set explicitly if running inside tmux where
+# detection fails — e.g. image_protocol = "iterm2" for iTerm2+tmux.
+# Override with MOLLY_IMAGE_PROTOCOL env var.
+image_protocol = "auto"

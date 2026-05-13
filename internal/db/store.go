@@ -2,10 +2,12 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -36,8 +38,16 @@ var schema = []string{
 		last_seen  DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL
 	)`,
+	`CREATE TABLE IF NOT EXISTS notifications (
+		msg_id    TEXT PRIMARY KEY,
+		channel   TEXT NOT NULL,
+		username  TEXT NOT NULL,
+		content   TEXT NOT NULL,
+		timestamp DATETIME NOT NULL
+	)`,
 	`CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel, timestamp)`,
 	`CREATE INDEX IF NOT EXISTS idx_messages_content ON messages(content)`,
+	`ALTER TABLE messages ADD COLUMN attachments_json TEXT NOT NULL DEFAULT ''`,
 }
 
 func New(dbPath string) (*Store, error) {
@@ -60,6 +70,10 @@ func New(dbPath string) (*Store, error) {
 
 	for _, stmt := range schema {
 		if _, err := db.Exec(stmt); err != nil {
+			// Ignore "duplicate column" errors from ALTER TABLE migration
+			if strings.Contains(err.Error(), "duplicate column name") {
+				continue
+			}
 			db.Close()
 			return nil, fmt.Errorf("executing schema migration: %w", err)
 		}
@@ -69,9 +83,10 @@ func New(dbPath string) (*Store, error) {
 }
 
 func (s *Store) InsertMessage(msg model.Message) error {
+	attJSON := marshalAttachments(msg.Attachments)
 	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO messages (id, username, content, channel, timestamp) VALUES (?, ?, ?, ?, ?)`,
-		msg.ID, msg.Username, msg.Content, msg.Channel, msg.Timestamp.UTC(),
+		`INSERT OR IGNORE INTO messages (id, username, content, channel, timestamp, attachments_json) VALUES (?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.Username, msg.Content, msg.Channel, msg.Timestamp.UTC(), attJSON,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting message: %w", err)
@@ -84,10 +99,10 @@ func (s *Store) GetMessages(channel string, limit int, before *time.Time) ([]mod
 	var query string
 
 	if before != nil {
-		query = `SELECT id, username, content, channel, timestamp FROM messages WHERE channel = ? AND timestamp < ? ORDER BY timestamp DESC LIMIT ?`
+		query = `SELECT id, username, content, channel, timestamp, attachments_json FROM messages WHERE channel = ? AND timestamp < ? ORDER BY timestamp DESC LIMIT ?`
 		args = []interface{}{channel, before.UTC(), limit}
 	} else {
-		query = `SELECT id, username, content, channel, timestamp FROM messages WHERE channel = ? ORDER BY timestamp DESC LIMIT ?`
+		query = `SELECT id, username, content, channel, timestamp, attachments_json FROM messages WHERE channel = ? ORDER BY timestamp DESC LIMIT ?`
 		args = []interface{}{channel, limit}
 	}
 
@@ -100,9 +115,11 @@ func (s *Store) GetMessages(channel string, limit int, before *time.Time) ([]mod
 	var msgs []model.Message
 	for rows.Next() {
 		var m model.Message
-		if err := rows.Scan(&m.ID, &m.Username, &m.Content, &m.Channel, &m.Timestamp); err != nil {
+		var attJSON string
+		if err := rows.Scan(&m.ID, &m.Username, &m.Content, &m.Channel, &m.Timestamp, &attJSON); err != nil {
 			return nil, fmt.Errorf("scanning message row: %w", err)
 		}
+		m.Attachments = unmarshalAttachments(attJSON)
 		msgs = append(msgs, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -114,7 +131,7 @@ func (s *Store) GetMessages(channel string, limit int, before *time.Time) ([]mod
 
 func (s *Store) SearchMessages(query string) ([]model.Message, error) {
 	rows, err := s.db.Query(
-		`SELECT id, username, content, channel, timestamp FROM messages WHERE content LIKE ? ORDER BY timestamp DESC LIMIT 100`,
+		`SELECT id, username, content, channel, timestamp, attachments_json FROM messages WHERE content LIKE ? ORDER BY timestamp DESC LIMIT 100`,
 		"%"+query+"%",
 	)
 	if err != nil {
@@ -125,9 +142,11 @@ func (s *Store) SearchMessages(query string) ([]model.Message, error) {
 	var msgs []model.Message
 	for rows.Next() {
 		var m model.Message
-		if err := rows.Scan(&m.ID, &m.Username, &m.Content, &m.Channel, &m.Timestamp); err != nil {
+		var attJSON string
+		if err := rows.Scan(&m.ID, &m.Username, &m.Content, &m.Channel, &m.Timestamp, &attJSON); err != nil {
 			return nil, fmt.Errorf("scanning search result row: %w", err)
 		}
+		m.Attachments = unmarshalAttachments(attJSON)
 		msgs = append(msgs, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -135,6 +154,41 @@ func (s *Store) SearchMessages(query string) ([]model.Message, error) {
 	}
 
 	return msgs, nil
+}
+
+func (s *Store) InsertNotification(n model.Notification) error {
+	_, err := s.db.Exec(
+		`INSERT OR IGNORE INTO notifications (msg_id, channel, username, content, timestamp) VALUES (?, ?, ?, ?, ?)`,
+		n.MsgID, n.Channel, n.Username, n.Content, n.Timestamp.UTC(),
+	)
+	if err != nil {
+		return fmt.Errorf("inserting notification: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) GetNotifications() ([]model.Notification, error) {
+	rows, err := s.db.Query(
+		`SELECT msg_id, channel, username, content, timestamp FROM notifications ORDER BY timestamp ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying notifications: %w", err)
+	}
+	defer rows.Close()
+
+	var result []model.Notification
+	for rows.Next() {
+		var n model.Notification
+		if err := rows.Scan(&n.MsgID, &n.Channel, &n.Username, &n.Content, &n.Timestamp); err != nil {
+			return nil, fmt.Errorf("scanning notification row: %w", err)
+		}
+		result = append(result, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating notification rows: %w", err)
+	}
+
+	return result, nil
 }
 
 func (s *Store) InsertChannel(name string) error {
@@ -238,6 +292,28 @@ func (s *Store) Close() error {
 		return s.db.Close()
 	}
 	return nil
+}
+
+func marshalAttachments(atts []model.Attachment) string {
+	if len(atts) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(atts)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func unmarshalAttachments(s string) []model.Attachment {
+	if s == "" {
+		return nil
+	}
+	var atts []model.Attachment
+	if err := json.Unmarshal([]byte(s), &atts); err != nil {
+		return nil
+	}
+	return atts
 }
 
 func DefaultDBPath() (string, error) {

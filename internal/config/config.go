@@ -53,8 +53,9 @@ type DiscordAuthConfig struct {
 }
 
 type UIConfig struct {
-	Theme        string `toml:"theme"`
-	HistoryLimit int    `toml:"history_limit"`
+	Theme         string `toml:"theme"`
+	HistoryLimit  int    `toml:"history_limit"`
+	ImageProtocol string `toml:"image_protocol"`
 }
 
 func Default() *Config {
@@ -221,6 +222,9 @@ func applyEnvOverrides(cfg *Config) {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.UI.HistoryLimit = n
 		}
+	}
+	if v := os.Getenv("MOLLY_IMAGE_PROTOCOL"); v != "" {
+		cfg.UI.ImageProtocol = v
 	}
 }
 

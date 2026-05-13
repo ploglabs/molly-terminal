@@ -2,15 +2,26 @@ package model
 
 import "time"
 
+type Attachment struct {
+	URL         string `json:"url"`
+	ProxyURL    string `json:"proxy_url,omitempty"`
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type,omitempty"`
+	Width       int    `json:"width,omitempty"`
+	Height      int    `json:"height,omitempty"`
+	Size        int    `json:"size,omitempty"`
+}
+
 type Message struct {
-	ID             string    `json:"id"`
-	Username       string    `json:"username"`
-	Content        string    `json:"content"`
-	Channel        string    `json:"channel"`
-	Timestamp      time.Time `json:"timestamp"`
-	ReplyToID      string    `json:"reply_to_id,omitempty"`
-	ReplyToContent string    `json:"reply_to_content,omitempty"`
-	ReplyToAuthor  string    `json:"reply_to_author,omitempty"`
+	ID             string       `json:"id"`
+	Username       string       `json:"username"`
+	Content        string       `json:"content"`
+	Channel        string       `json:"channel"`
+	Timestamp      time.Time    `json:"timestamp"`
+	ReplyToID      string       `json:"reply_to_id,omitempty"`
+	ReplyToContent string       `json:"reply_to_content,omitempty"`
+	ReplyToAuthor  string       `json:"reply_to_author,omitempty"`
+	Attachments    []Attachment `json:"attachments,omitempty"`
 }
 
 type Channel struct {

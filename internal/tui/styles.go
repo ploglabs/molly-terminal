@@ -229,6 +229,42 @@ func autoCompleteStyle() lipgloss.Style {
 		Padding(0, 1)
 }
 
+func shortcutScrollStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#6bcb77"))
+}
+
+func shortcutFileStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#cc5de8"))
+}
+
+func shortcutSearchStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd93d"))
+}
+
+func shortcutReplyStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#4d96ff"))
+}
+
+func shortcutSelectStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#ff922b"))
+}
+
+func shortcutMentionStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#ffaa33"))
+}
+
+func shortcutChStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#20c997"))
+}
+
+func shortcutLatestStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#74c0fc"))
+}
+
+func shortcutQuitStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(themeErr)
+}
+
 func autoCompleteItemStyle(highlighted bool) lipgloss.Style {
 	s := lipgloss.NewStyle().Foreground(themeAccentDim)
 	if highlighted {

@@ -67,6 +67,8 @@ func main() {
 	registry.Register(commands.NewFileCmd())
 	registry.Register(commands.NewSnippetCmd())
 
+	tui.InitImageProtocol(cfg.UI.ImageProtocol)
+
 	model := tui.New(client, sender, store, fetcher, registry, cfg.General.Channel, cfg.General.Username)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
