@@ -58,14 +58,89 @@ release:
     name: molly-terminal
 
 brews:
-  - id: molly
-    repository:
+  - repository:
       owner: ploglabs
       name: homebrew-tap
     directory: Formula
     homepage: "https://github.com/ploglabs/molly-terminal"
-    description: "Terminal-native realtime chat client"
-    test:
-      system: "#{bin}/molly --help"
+    description: "Terminal-native realtime chat client for Discord"
+    license: MIT
+    test: |
+      system "#{bin}/molly", "--help"
     install: |
       bin.install "molly"
+
+nfpms:
+  - package_name: molly
+    file_name_template: >-
+      {{ .PackageName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+    homepage: https://github.com/ploglabs/molly-terminal
+    description: >
+      Terminal-native realtime chat client for Discord.
+      Connects to a relay server over WebSockets with a
+      keyboard-driven TUI, offline SQLite storage, and
+      Discord webhook integration.
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+      - archlinux
+    maintainer: "ploglabs <hello@ploglabs.dev>"
+    section: net
+    contents:
+      - src: config.example.toml
+        dst: /usr/share/doc/molly/config.example.toml
+
+scoops:
+  - name: molly
+    repository:
+      owner: ploglabs
+      name: scoop-bucket
+    homepage: https://github.com/ploglabs/molly-terminal
+    description: "Terminal-native realtime chat client for Discord"
+    license: MIT
+
+nix:
+  - name: molly
+    repository:
+      owner: ploglabs
+      name: nixpkgs
+    homepage: https://github.com/ploglabs/molly-terminal
+    description: "Terminal-native realtime chat client for Discord"
+    license: mit
+
+aurs:
+  - name: molly-bin
+    homepage: https://github.com/ploglabs/molly-terminal
+    description: "Terminal-native realtime chat client for Discord"
+    license: MIT
+    maintainers:
+      - "ploglabs <hello@ploglabs.dev>"
+    private_key: "{{ .Env.AUR_KEY }}"
+    git_url: "ssh://aur@aur.archlinux.org/molly-bin.git"
+    commit_author:
+      name: ploglabs
+      email: hello@ploglabs.dev
+
+snapcrafts:
+  - name: molly
+    summary: "Terminal-native realtime chat client for Discord"
+    description: >
+      Molly is a terminal-native realtime chat client built in Go.
+      It connects to a relay server over WebSockets, sends messages
+      via Discord webhooks, and stores everything locally in SQLite.
+    grade: stable
+    confinement: strict
+    license: MIT
+    apps:
+      molly:
+        plugs:
+          - network
+          - home
+    plugs:
+      network:
+      home:

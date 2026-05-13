@@ -21,10 +21,51 @@ A terminal-native realtime chat client built in Go. Molly connects to a relay se
 
 Download the latest release from [GitHub Releases](https://github.com/ploglabs/molly-terminal/releases).
 
-### Homebrew
+### macOS — Homebrew
 
 ```bash
 brew install ploglabs/tap/molly
+```
+
+### Linux — apt (Debian/Ubuntu)
+
+```bash
+# Download the latest .deb from GitHub Releases
+curl -LO https://github.com/ploglabs/molly-terminal/releases/latest/download/molly_$(curl -s https://api.github.com/repos/ploglabs/molly-terminal/releases/latest | grep tag_name | cut -d'"' -f4)_linux_amd64.deb
+sudo dpkg -i molly_*_linux_amd64.deb
+```
+
+### Linux — pacman (Arch)
+
+```bash
+yay -S molly-bin
+# or download .pkg.tar.zst from GitHub Releases
+```
+
+### Linux — rpm (Fedora/RHEL)
+
+```bash
+curl -LO https://github.com/ploglabs/molly-terminal/releases/latest/download/molly_$(curl -s https://api.github.com/repos/ploglabs/molly-terminal/releases/latest | grep tag_name | cut -d'"' -f4)_linux_amd64.rpm
+sudo rpm -i molly_*_linux_amd64.rpm
+```
+
+### Linux — Snap
+
+```bash
+sudo snap install molly
+```
+
+### Linux/macOS — Nix
+
+```bash
+nix profile install github:ploglabs/molly-terminal
+```
+
+### Windows — Scoop
+
+```powershell
+scoop bucket add ploglabs https://github.com/ploglabs/scoop-bucket
+scoop install molly
 ```
 
 ### go install
