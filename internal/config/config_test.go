@@ -28,14 +28,15 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestValidateMissingFields(t *testing.T) {
 	cfg := Default()
-	cfg.General.Username = "tester"
+	cfg.Server.WebsocketURL = ""
 
 	err := cfg.Validate()
 	if err == nil {
-		t.Fatal("expected validation error for empty required fields")
+		t.Fatal("expected validation error for missing websocket_url")
 	}
 
 	cfg.Server.WebsocketURL = "wss://example.com"
+	cfg.Server.WebhookURL = ""
 	err = cfg.Validate()
 	if err == nil {
 		t.Fatal("expected validation error for missing webhook_url")
@@ -51,12 +52,14 @@ func TestValidateMissingFields(t *testing.T) {
 func TestValidateMissingUsername(t *testing.T) {
 	cfg := Default()
 	cfg.General.Username = ""
-	cfg.Server.WebsocketURL = "wss://example.com"
-	cfg.Server.WebhookURL = "https://discord.com/api/webhooks/test"
+	cfg.Auth.Enabled = false
 
 	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("expected error for missing username")
+	if err != nil {
+		t.Fatalf("expected username to default to 'anon' when empty and auth disabled, got: %v", err)
+	}
+	if cfg.General.Username != "anon" {
+		t.Fatalf("expected username to be set to 'anon', got '%s'", cfg.General.Username)
 	}
 }
 
@@ -346,6 +349,7 @@ username = "testuser"
 
 [server]
 websocket_url = "wss://relay.example.com/ws"
+webhook_url = ""
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
 		t.Fatalf("writing test config: %v", err)
@@ -368,9 +372,12 @@ func TestLoadNonexistentConfigFile(t *testing.T) {
 
 	clearConfigEnvVars()
 
-	_, err := Load()
-	if err == nil {
-		t.Fatal("expected error when config file doesn't exist and required fields are empty")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected defaults to be valid when config file doesn't exist, got: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected non-nil config")
 	}
 }
 
