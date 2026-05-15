@@ -78,6 +78,8 @@ func TestValidateAllowsMissingUsernameWithDiscordAuth(t *testing.T) {
 }
 
 func TestLoadFromTOMLFile(t *testing.T) {
+	clearConfigEnvVars()
+
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
 
@@ -98,40 +100,29 @@ history_limit = 50
 		t.Fatalf("writing test config: %v", err)
 	}
 
-	cfg := Default()
-	var loadErr error
-	func() {
-		defer func() {
-			os.Args = []string{"molly", "--config", cfgPath}
-			origArgs := os.Args
-			os.Args = []string{"molly", "--config", cfgPath}
-			cfg, loadErr = Load()
-			os.Args = origArgs
-		}()
-	}()
+	origArgs := os.Args
+	os.Args = []string{"molly", "--config", cfgPath}
+	defer func() { os.Args = origArgs }()
 
-	_ = cfg
-	_ = loadErr
-
-	cfg2 := Default()
-	if _, err := tomlDecodeFile(cfgPath, cfg2); err != nil {
-		t.Fatalf("failed to decode test config: %v", err)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
 	}
 
-	if cfg2.General.Username != "testuser" {
-		t.Errorf("expected username 'testuser', got '%s'", cfg2.General.Username)
+	if cfg.General.Username != "testuser" {
+		t.Errorf("expected username 'testuser', got '%s'", cfg.General.Username)
 	}
-	if cfg2.General.Channel != "dev" {
-		t.Errorf("expected channel 'dev', got '%s'", cfg2.General.Channel)
+	if cfg.General.Channel != "dev" {
+		t.Errorf("expected channel 'dev', got '%s'", cfg.General.Channel)
 	}
-	if cfg2.Server.WebsocketURL != "wss://relay.test.com/ws" {
-		t.Errorf("expected websocket_url, got '%s'", cfg2.Server.WebsocketURL)
+	if cfg.Server.WebsocketURL != "wss://relay.test.com/ws" {
+		t.Errorf("expected websocket_url, got '%s'", cfg.Server.WebsocketURL)
 	}
-	if cfg2.UI.Theme != "dracula" {
-		t.Errorf("expected theme 'dracula', got '%s'", cfg2.UI.Theme)
+	if cfg.UI.Theme != "dracula" {
+		t.Errorf("expected theme 'dracula', got '%s'", cfg.UI.Theme)
 	}
-	if cfg2.UI.HistoryLimit != 50 {
-		t.Errorf("expected history_limit 50, got %d", cfg2.UI.HistoryLimit)
+	if cfg.UI.HistoryLimit != 50 {
+		t.Errorf("expected history_limit 50, got %d", cfg.UI.HistoryLimit)
 	}
 }
 
