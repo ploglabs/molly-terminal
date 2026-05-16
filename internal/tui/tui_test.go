@@ -214,7 +214,7 @@ func TestMergeMessagesIncomingOlderThanExisting(t *testing.T) {
 
 func TestViewFitsWindowWithSidebarsAndMultilineInput(t *testing.T) {
 	base := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
-	m := New(nil, nil, nil, nil, nil, "general", "me")
+	m := New(nil, nil, nil, nil, nil, "general", "me", "", "", "")
 	m.width = 120
 	m.height = 30
 	m.channels = []string{"general", "backend", "frontend", "ops", "random"}
@@ -246,7 +246,7 @@ func TestViewFitsWindowWithSidebarsAndMultilineInput(t *testing.T) {
 }
 
 func TestViewFitsSmallWindow(t *testing.T) {
-	m := New(nil, nil, nil, nil, nil, "general", "me")
+	m := New(nil, nil, nil, nil, nil, "general", "me", "", "", "")
 	m.width = 40
 	m.height = 12
 	m.input.SetValue("one\ntwo\nthree\nfour\nfive\nsix\nseven")

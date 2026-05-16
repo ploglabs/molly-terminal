@@ -191,6 +191,11 @@ func (s *Store) GetNotifications() ([]model.Notification, error) {
 	return result, nil
 }
 
+func (s *Store) ClearNotifications() error {
+	_, err := s.db.Exec(`DELETE FROM notifications`)
+	return err
+}
+
 func (s *Store) InsertChannel(name string) error {
 	_, err := s.db.Exec(
 		`INSERT OR IGNORE INTO channels (name, joined_at) VALUES (?, ?)`,

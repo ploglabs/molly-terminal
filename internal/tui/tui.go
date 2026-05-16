@@ -3,8 +3,10 @@ package tui
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,6 +50,21 @@ type localHistoryMsg struct {
 	Channel  string
 	Err      error
 }
+
+type GithubActivityEvent struct {
+	Type      string
+	Repo      string
+	Actor     string
+	Title     string
+	Timestamp time.Time
+}
+
+type githubActivityMsg struct {
+	Events []GithubActivityEvent
+	Err    error
+}
+
+type periodicRefreshMsg struct{}
 
 type Model struct {
 	width  int
@@ -98,9 +115,17 @@ type Model struct {
 
 	replySelectMode bool
 	replySelectIdx  int
+
+	discordID         string
+	discordUsername   string
+	discordGlobalName string
+	githubRepo        string
+	githubToken       string
+	githubEvents      []GithubActivityEvent
+	githubLastFetch   time.Time
 }
 
-func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, registry *commands.Registry, channel, username string) Model {
+func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetcher *history.Fetcher, registry *commands.Registry, channel, username, discordID, discordUsername, discordGlobalName string) Model {
 	channels := []string{channel}
 	var notifications []model.Notification
 	if store != nil {
@@ -114,29 +139,32 @@ func New(client *wsclient.Client, sender *webhook.Sender, store *db.Store, fetch
 	}
 
 	return Model{
-		client:           client,
-		sender:           sender,
-		store:            store,
-		fetcher:          fetcher,
-		registry:         registry,
-		channel:          channel,
-		username:         username,
-		channels:         channels,
-		available:        make(map[string]struct{}),
-		status:           wsclient.StatusDisconnected,
-		lastSendOk:       true,
-		loadingHistory:   false,
-		historyLoaded:    false,
-		allHistoryLoaded: false,
-		input:            newInput("> "),
-		channelsVisible:  true,
-		usersVisible:     true,
-		notifVisible:     true,
-		notifications:    notifications,
-		typingUsers:      make(map[string]time.Time),
-		sentHashes:       make(map[string]time.Time),
-		presences:        make(map[string]model.UserPresence),
-		log:              log.Default(),
+		client:            client,
+		sender:            sender,
+		store:             store,
+		fetcher:           fetcher,
+		registry:          registry,
+		channel:           channel,
+		username:          username,
+		discordID:         discordID,
+		discordUsername:   discordUsername,
+		discordGlobalName: discordGlobalName,
+		channels:          channels,
+		available:         make(map[string]struct{}),
+		status:            wsclient.StatusDisconnected,
+		lastSendOk:        true,
+		loadingHistory:    false,
+		historyLoaded:     false,
+		allHistoryLoaded:  false,
+		input:             newInput("> "),
+		channelsVisible:   true,
+		usersVisible:      true,
+		notifVisible:      true,
+		notifications:     notifications,
+		typingUsers:       make(map[string]time.Time),
+		sentHashes:        make(map[string]time.Time),
+		presences:         make(map[string]model.UserPresence),
+		log:               log.Default(),
 	}
 }
 
@@ -151,6 +179,8 @@ func (m Model) Init() tea.Cmd {
 		m.loadLocalHistory(m.channel, 100),
 		history.InitialFetch(m.fetcher, m.channel, 100),
 		m.input.CursorBlinkCmd(),
+		periodicRefreshCmd(),
+		m.githubPollCmd(),
 	)
 }
 
@@ -167,10 +197,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case wsMsg:
 		m.addChannel(msg.Channel)
 
-		// Check for @mention
+		// Check for @mention — only notify if not from self
 		var notifCmd tea.Cmd
-		if msg.Username != m.username && strings.Contains(
-			strings.ToLower(msg.Content), "@"+strings.ToLower(m.username)) {
+		if !m.isSelfMessage(msg) && containsMentionExact(msg.Content, m.username) {
 			n := model.Notification{
 				Channel:   msg.Channel,
 				Username:  msg.Username,
@@ -189,9 +218,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(batch...)
 		}
-		key := contentHash(msg.Username, msg.Channel, msg.Content)
-		if _, exists := m.sentHashes[key]; exists {
-			delete(m.sentHashes, key)
+		// Try dedup with message's username and all known self aliases
+		if m.deduplicateSentMessage(msg.Username, msg.Channel, msg.Content) {
 			return m, m.listenMessages()
 		}
 		m.msgs = insertSorted(m.msgs, model.Message(msg))
@@ -487,6 +515,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return nil
 		}
+
+	case commands.ClearNotificationsMsg:
+		m.notifications = nil
+		m.notifIdx = 0
+		if m.store != nil {
+			go func() { _ = m.store.ClearNotifications() }()
+		}
+		sysMsg := commands.SystemMsg("mentions cleared")
+		m.msgs = append(m.msgs, sysMsg)
+		m.scrollOffset = 0
+		return m, nil
+
+	case periodicRefreshMsg:
+		if m.historyLoaded && len(m.msgs) > 0 {
+			return m, tea.Batch(periodicRefreshCmd(), history.FetchNewerSince(m.fetcher, m.channel, m.msgs[len(m.msgs)-1].Timestamp))
+		}
+		return m, periodicRefreshCmd()
+
+	case githubActivityMsg:
+		if msg.Err == nil {
+			m.githubEvents = msg.Events
+			m.githubLastFetch = time.Now()
+		}
+		return m, m.githubPollCmd()
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -802,12 +854,21 @@ func (m *Model) loadOlderIfNeeded() tea.Cmd {
 	return nil
 }
 
-// onlineUsers returns only terminal-connected users.
+// onlineUsers returns terminal-connected users, always including self.
 func (m Model) onlineUsers() []string {
-	if m.terminalOnline == nil {
-		return []string{}
+	seen := make(map[string]struct{})
+	var users []string
+	if m.username != "" {
+		seen[m.username] = struct{}{}
+		users = append(users, m.username)
 	}
-	return m.terminalOnline
+	for _, u := range m.terminalOnline {
+		if _, ok := seen[u]; !ok && u != "" {
+			seen[u] = struct{}{}
+			users = append(users, u)
+		}
+	}
+	return users
 }
 
 func (m *Model) moveReplySelectUp() {
@@ -1121,6 +1182,12 @@ func (m Model) renderRightSidebar(width, height int) string {
 	if width < 10 {
 		return ""
 	}
+
+	githubHeight := 0
+	if m.githubRepo != "" && len(m.githubEvents) > 0 {
+		githubHeight = clampInt(len(m.githubEvents)+3, 5, height/4)
+	}
+
 	usersHeight := 0
 	if m.usersVisible {
 		usersHeight = clampInt(len(m.onlineUsers())+4, 7, height/3)
@@ -1128,20 +1195,65 @@ func (m Model) renderRightSidebar(width, height int) string {
 			usersHeight = 7
 		}
 	}
-	notificationsHeight := height - usersHeight
+
+	notificationsHeight := height - usersHeight - githubHeight
 	if notificationsHeight < 8 {
 		notificationsHeight = 8
 		if usersHeight > 0 {
-			usersHeight = height - notificationsHeight
+			usersHeight = height - notificationsHeight - githubHeight
+			if usersHeight < 0 {
+				usersHeight = 0
+			}
 		}
 	}
 
-	if usersHeight <= 0 {
-		return m.renderNotifications(width, height)
+	var panels []string
+	if usersHeight > 0 {
+		panels = append(panels, m.renderUsers(width, usersHeight))
 	}
-	usersPanel := m.renderUsers(width, usersHeight)
+	if githubHeight > 0 {
+		panels = append(panels, m.renderGithubActivity(width, githubHeight))
+	}
 	notificationsPanel := m.renderNotifications(width, notificationsHeight)
-	return fitToSize(lipgloss.JoinVertical(lipgloss.Left, usersPanel, notificationsPanel), width, height)
+	panels = append(panels, notificationsPanel)
+
+	if len(panels) == 1 {
+		return panels[0]
+	}
+	return fitToSize(lipgloss.JoinVertical(lipgloss.Left, panels...), width, height)
+}
+
+func (m Model) renderGithubActivity(width, height int) string {
+	if width < 10 || len(m.githubEvents) == 0 {
+		return ""
+	}
+	title := panelTitleStyle().Render(fmt.Sprintf(" GitHub: %s ", m.githubRepo))
+	var items []string
+	for _, ev := range m.githubEvents {
+		ts := ev.Timestamp.Local().Format("01-02 15:04")
+		evType := strings.TrimSuffix(ev.Type, "Event")
+		line := fmt.Sprintf("%s %s @%s", ts, evType, ev.Actor)
+		items = append(items, lipgloss.NewStyle().Foreground(themeDim).PaddingLeft(1).Render(line))
+		if ev.Title != "" {
+			preview := ev.Title
+			maxW := width - 4
+			if maxW < 8 {
+				maxW = 8
+			}
+			if len([]rune(preview)) > maxW {
+				preview = string([]rune(preview)[:maxW]) + "…"
+			}
+			items = append(items, lipgloss.NewStyle().Foreground(themeAccent).PaddingLeft(2).Render(preview))
+		}
+	}
+	content := strings.Join(items, "\n")
+	boxHeight := height - 1
+	if boxHeight < 1 {
+		boxHeight = 1
+	}
+	content = clipLines(content, borderedContentHeight(boxHeight))
+	box := renderBorderedBox(panelStyle(), width, boxHeight, content)
+	return fitToSize(title+"\n"+box, width, height)
 }
 
 func (m Model) renderNotifications(width, height int) string {
@@ -1932,4 +2044,157 @@ func contentHash(username, channel, content string) string {
 	h := sha256.New()
 	h.Write([]byte(username + "\x00" + channel + "\x00" + content))
 	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// isSelfMessage returns true if the incoming wsMsg was sent by the local user.
+func (m *Model) isSelfMessage(msg wsMsg) bool {
+	if m.discordID != "" && msg.UserID != "" {
+		return msg.UserID == m.discordID
+	}
+	un := strings.ToLower(msg.Username)
+	return un == strings.ToLower(m.username) ||
+		(m.discordUsername != "" && un == strings.ToLower(m.discordUsername)) ||
+		(m.discordGlobalName != "" && un == strings.ToLower(m.discordGlobalName))
+}
+
+// deduplicateSentMessage checks sentHashes for the message using the received
+// username and all known self-username aliases.  Returns true if a hash match
+// is found (and removes the hash entry).
+func (m *Model) deduplicateSentMessage(username, channel, content string) bool {
+	key := contentHash(username, channel, content)
+	if _, ok := m.sentHashes[key]; ok {
+		delete(m.sentHashes, key)
+		return true
+	}
+	for _, uname := range []string{m.username, m.discordUsername, m.discordGlobalName} {
+		if uname == "" || strings.EqualFold(uname, username) {
+			continue
+		}
+		key2 := contentHash(uname, channel, content)
+		if _, ok := m.sentHashes[key2]; ok {
+			delete(m.sentHashes, key2)
+			return true
+		}
+	}
+	return false
+}
+
+// containsMentionExact checks whether content contains @username as a whole
+// word (not as a substring of a longer username).
+func containsMentionExact(content, username string) bool {
+	if username == "" {
+		return false
+	}
+	lower := strings.ToLower(content)
+	target := "@" + strings.ToLower(username)
+	i := 0
+	for {
+		idx := strings.Index(lower[i:], target)
+		if idx < 0 {
+			return false
+		}
+		abs := i + idx
+		end := abs + len(target)
+		if end >= len(lower) || !isWordRune(rune(lower[end])) {
+			return true
+		}
+		i = abs + 1
+	}
+}
+
+func isWordRune(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_'
+}
+
+// periodicRefreshCmd schedules a periodic history refresh every 30 seconds.
+func periodicRefreshCmd() tea.Cmd {
+	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
+		return periodicRefreshMsg{}
+	})
+}
+
+// WithGithub sets the GitHub repo and token for the activity panel.
+func (m Model) WithGithub(repo, token string) Model {
+	m.githubRepo = repo
+	m.githubToken = token
+	return m
+}
+
+// githubPollCmd schedules a GitHub activity fetch if a repo is configured.
+func (m Model) githubPollCmd() tea.Cmd {
+	if m.githubRepo == "" {
+		return nil
+	}
+	return tea.Tick(60*time.Second, func(t time.Time) tea.Msg {
+		return m.fetchGithubActivity()
+	})
+}
+
+// fetchGithubActivity fetches recent events from the GitHub API.
+func (m Model) fetchGithubActivity() githubActivityMsg {
+	if m.githubRepo == "" {
+		return githubActivityMsg{}
+	}
+	url := fmt.Sprintf("https://api.github.com/repos/%s/events", m.githubRepo)
+	req, err := newGithubRequest(url, m.githubToken)
+	if err != nil {
+		return githubActivityMsg{Err: err}
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return githubActivityMsg{Err: err}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return githubActivityMsg{Err: fmt.Errorf("github API: HTTP %d", resp.StatusCode)}
+	}
+	var raw []struct {
+		Type      string `json:"type"`
+		Actor     struct{ Login string `json:"login"` } `json:"actor"`
+		Repo      struct{ Name string `json:"name"` } `json:"repo"`
+		Payload   struct {
+			Action  string `json:"action"`
+			Commits []struct{ Message string `json:"message"` } `json:"commits"`
+		} `json:"payload"`
+		CreatedAt string `json:"created_at"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return githubActivityMsg{Err: err}
+	}
+	events := make([]GithubActivityEvent, 0, len(raw))
+	for i, r := range raw {
+		if i >= 10 {
+			break
+		}
+		ts, _ := time.Parse(time.RFC3339, r.CreatedAt)
+		title := r.Payload.Action
+		if len(r.Payload.Commits) > 0 {
+			title = r.Payload.Commits[0].Message
+			if len(title) > 60 {
+				title = title[:60] + "..."
+			}
+		}
+		events = append(events, GithubActivityEvent{
+			Type:      r.Type,
+			Repo:      r.Repo.Name,
+			Actor:     r.Actor.Login,
+			Title:     title,
+			Timestamp: ts,
+		})
+	}
+	return githubActivityMsg{Events: events}
+}
+
+// newGithubRequest builds an HTTP GET request with optional auth token.
+func newGithubRequest(url, token string) (*http.Request, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return req, nil
 }

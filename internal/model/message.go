@@ -15,6 +15,7 @@ type Attachment struct {
 type Message struct {
 	ID             string       `json:"id"`
 	Username       string       `json:"username"`
+	UserID         string       `json:"user_id,omitempty"`
 	Content        string       `json:"content"`
 	Channel        string       `json:"channel"`
 	Timestamp      time.Time    `json:"timestamp"`

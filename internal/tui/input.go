@@ -1,12 +1,38 @@
 package tui
 
 import (
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// readClipboard reads text from the OS clipboard using platform-native tools.
+func readClipboard() string {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("pbpaste")
+	case "windows":
+		cmd = exec.Command("powershell", "-command", "Get-Clipboard")
+	default:
+		if _, err := exec.LookPath("xclip"); err == nil {
+			cmd = exec.Command("xclip", "-selection", "clipboard", "-o")
+		} else if _, err := exec.LookPath("xsel"); err == nil {
+			cmd = exec.Command("xsel", "--clipboard", "--output")
+		} else {
+			return ""
+		}
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimRight(string(out), "\n")
+}
 
 type InputModel struct {
 	width      int
@@ -353,6 +379,12 @@ func handleInputKey(msg tea.KeyMsg, m *InputModel) (bool, string) {
 		m.text = append(m.text[:m.pos], m.text[end:]...)
 	case "ctrl+u":
 		m.Clear()
+	case "ctrl+v":
+		if text := readClipboard(); text != "" {
+			for _, r := range []rune(text) {
+				m.Insert(r)
+			}
+		}
 	}
 
 	return false, ""
