@@ -141,3 +141,33 @@ func LoadOlder(f *Fetcher, channel string, oldestTimestamp time.Time) tea.Cmd {
 	before := oldestTimestamp
 	return f.FetchAsync(channel, defaultLimit, &before)
 }
+
+func (f *Fetcher) FetchSince(channel string, since time.Time) tea.Cmd {
+	return func() tea.Msg {
+		if f.baseURL == "" {
+			return FetchResultMsg{Channel: channel}
+		}
+		url := fmt.Sprintf("%s/api/channels/%s/messages?since=%s&limit=50",
+			f.baseURL, channel, since.UTC().Format(time.RFC3339Nano))
+		resp, err := f.httpClient.Get(url)
+		if err != nil {
+			return FetchResultMsg{Channel: channel, Err: err}
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return FetchResultMsg{Channel: channel}
+		}
+		var msgs []model.Message
+		if err := json.NewDecoder(resp.Body).Decode(&msgs); err != nil {
+			return FetchResultMsg{Channel: channel, Err: err}
+		}
+		return FetchResultMsg{Messages: msgs, Channel: channel}
+	}
+}
+
+func FetchNewerSince(f *Fetcher, channel string, since time.Time) tea.Cmd {
+	if f == nil || f.baseURL == "" {
+		return nil
+	}
+	return f.FetchSince(channel, since)
+}

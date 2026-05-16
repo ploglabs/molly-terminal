@@ -68,10 +68,14 @@ func main() {
 	registry.Register(commands.NewOpenCmd())
 	registry.Register(commands.NewSnippetCmd())
 	registry.Register(commands.NewLogoutCmd(cfg, configPath))
+	registry.Register(commands.NewClearMentionsCmd())
 
 	tui.InitImageProtocol(cfg.UI.ImageProtocol)
 
-	model := tui.New(client, sender, store, fetcher, registry, cfg.General.Channel, cfg.General.Username)
+	model := tui.New(client, sender, store, fetcher, registry, cfg.General.Channel, cfg.General.Username, cfg.General.DiscordID, cfg.General.DiscordUsername, cfg.General.DiscordGlobalName)
+	if cfg.Github.Repo != "" {
+		model = model.WithGithub(cfg.Github.Repo, cfg.Github.Token)
+	}
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	sigCh := make(chan os.Signal, 1)

@@ -333,6 +333,7 @@ func (c *Client) readLoop() {
 			msg := model.Message{
 				ID:             evt.MessageID,
 				Username:       evt.Username,
+				UserID:         evt.UserID,
 				Content:        evt.Content,
 				Channel:        evt.Channel,
 				Timestamp:      ts,

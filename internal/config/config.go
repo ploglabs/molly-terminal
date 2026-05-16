@@ -12,11 +12,17 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+type GithubConfig struct {
+	Token string `toml:"token"`
+	Repo  string `toml:"repo"`
+}
+
 type Config struct {
 	General GeneralConfig `toml:"general"`
 	Server  ServerConfig  `toml:"server"`
 	Auth    AuthConfig    `toml:"auth"`
 	UI      UIConfig      `toml:"ui"`
+	Github  GithubConfig  `toml:"github"`
 }
 
 type GeneralConfig struct {
@@ -224,6 +230,12 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("MOLLY_IMAGE_PROTOCOL"); v != "" {
 		cfg.UI.ImageProtocol = v
+	}
+	if v := os.Getenv("MOLLY_GITHUB_TOKEN"); v != "" {
+		cfg.Github.Token = v
+	}
+	if v := os.Getenv("MOLLY_GITHUB_REPO"); v != "" {
+		cfg.Github.Repo = v
 	}
 }
 
